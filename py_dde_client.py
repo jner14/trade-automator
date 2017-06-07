@@ -1,18 +1,10 @@
-## {{{ http://code.activestate.com/recipes/577654/ (r1)
+## Based on: http://code.activestate.com/recipes/577654/
 # !/usr/bin/env python
 # Send DDE Execute command to running program
 
-# After few hours of runtime the request method starts fail frequently - do you know wahat could be the problem?
-# For example, at start it would run for an hour or so with no failed requests and then it would start to fail usually
-# about 270 requests each second (I do about 6 requests each second).
-#
-# EDIT: I profiled this with PyVmMonitor, it seems that there is a memory leak somewhere
-#
-# EDIT2: Added DDE.FreeDataHandle(hDdeData) and DDE.UnaccessData(hDdeData) at the end of the request method and it seems
-# that it has fixed the leak
-
-from ctypes import POINTER, WINFUNCTYPE, c_void_p, c_int, c_ulong, c_char_p  # , c_char_p
-from ctypes.wintypes import BOOL, DWORD, LPCWSTR, UINT  # , ULONG, BYTE, INT
+from ctypes import POINTER, WINFUNCTYPE, c_char_p, c_void_p, c_int, c_ulong, c_char_p
+from ctypes.wintypes import BOOL, DWORD, BYTE, INT, LPCWSTR, UINT, ULONG
+import time
 
 # DECLARE_HANDLE(name) typedef void *name;
 HCONV = c_void_p  # = DECLARE_HANDLE(HCONV)
@@ -182,7 +174,7 @@ class DDEClient(object):
         DDE.FreeStringHandle(self._idInst, hszItem)
         if not hDdeData:
             raise DDEError("Unable to %s advise" % ("stop" if stop else "start"), self._idInst)
-            DDE.FreeDataHandle(hDdeData)
+        DDE.FreeDataHandle(hDdeData)
 
     def execute(self, command, timeout=5000):
         """Execute a DDE command."""
@@ -191,7 +183,7 @@ class DDEClient(object):
         hDdeData = DDE.ClientTransaction(pData, cbData, self._hConv, HSZ(), CF_TEXT, XTYP_EXECUTE, timeout, LPDWORD())
         if not hDdeData:
             raise DDEError("Unable to send command", self._idInst)
-            DDE.FreeDataHandle(hDdeData)
+        DDE.FreeDataHandle(hDdeData)
 
     def request(self, item, timeout=5000):
         """Request data from DDE service."""
@@ -205,20 +197,19 @@ class DDEClient(object):
 
         if timeout != TIMEOUT_ASYNC:
             pdwSize = DWORD(0)
-            pData = DDE.AccessData(hDdeData, byref(pdwSize))
-        # if not pData:
-        #    DDE.FreeDataHandle(hDdeData)
-        #    raise DDEError("Unable to access data", self._idInst)
-        #    # TODO: use pdwSize
-        #    DDE.UnaccessData(hDdeData)
-        # else:
-        #    pData = None
-        #    DDE.FreeDataHandle(hDdeData)
+            try:
+                pData = DDE.AccessData(hDdeData, byref(pdwSize))
+            except:
+                pData = None
+
+        if not pData:
+            time.sleep(0.05)
+            pData = self.request(item)
         return pData
 
     def callback(self, value, item=None):
         """Calback function for advice."""
-        print( "%s: %s" % (item, value))
+        print("%s: %s" % (item, value))
 
     def _callback(self, wType, uFmt, hConv, hsz1, hsz2, hDdeData, dwData1, dwData2):
         # if wType == XTYP_ADVDATA:
@@ -232,7 +223,6 @@ class DDEClient(object):
             self.callback(pData, item.value)
             DDE.UnaccessData(hDdeData)
         return DDE_FACK
-        return 0
 
 
 def WinMSGLoop():
@@ -254,16 +244,18 @@ def WinMSGLoop():
         DispatchMessage(lpmsg)
 
 
-        # Go
-        # if __name__ == "__main__":
+if __name__ == "__main__":
+    # Create a connection to ESOTS (OTS Swardfish) and to instrument MAR11 ALSI
+    dde = DDEClient("QLINK", "TS")
 
-        # get connect with server SPnet
-        # dde = DDEClient("Spserver", "G41")
+    # Monitor the various attributes from MAR11 ALSI
+    dde.advise("$SPX,5,DTPS")    # Last bid quantity
+    # dde.advise("BIDP")    # Last bid price
+    # dde.advise("ASKP")    # Last ask price
+    # dde.advise("ASKQ")    # Last ask quantity
+    # dde.advise("LASTP")   # Last traded price
+    # dde.advise("TIME")    # Last traded time
+    # dde.advise("VOL")     # Daily volume
 
-        # while True:
-        # print dde.request("R(56,40)")
-        # time.sleep(1)
-
-
-
-        # WinMSGLoop()
+    # Run the main message loop to receive advices
+    WinMSGLoop()
