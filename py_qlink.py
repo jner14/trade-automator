@@ -6,7 +6,7 @@ import pandas as pd
 
 class QLinkConn(object):
     MAX_TRIES = 5
-    WAIT = 1
+    WAIT = .1
     BAR_LABELS = {'d': 'Date',
                   't': 'Time',
                   'o': 'Open',
@@ -22,10 +22,10 @@ class QLinkConn(object):
                     's': 'Size'}
 
     def __init__(self):
-        self.bars_client = ddec.DDEClient('QLINK', 'bars')
-        self.ts_client = ddec.DDEClient('QLINK', 'ts')
-        self.snapshot_client = ddec.DDEClient('QLINK', 'snapshot')
-        super().__init__()
+        self.app_name = 'qlink'
+        self.bars_client = None
+        self.ts_client = None
+        # self.snapshot_client = ddec.DDEClient(app_name, 'snapshot')
 
     def get_bars(self, symbol, period=5, count=100, fields='DTOHLCV',
                  start_time='08:00', end_time='16:30', fill=True):
@@ -33,6 +33,8 @@ class QLinkConn(object):
             SYMBOL,PERIOD,#BARS,[DTOHLCV],{HH:MM-HH:MM},{FILL}
             Example: IBM,15,1000,DTOHLCV,09:30-16:00
         """
+        if self.bars_client is None:
+            self.bars_client = ddec.DDEClient(self.app_name, 'bars')
 
         # Create main request message
         message = "{},{},{},{}".format(symbol, period, count, fields)
@@ -53,7 +55,7 @@ class QLinkConn(object):
 
             # Break from loop if response is not empty
             if response.count('\n') < len(response):
-                print("QLinkConn-Bars(SUCCESS)")
+                print("QLinkConn-Bars(%s SUCCESS)" % symbol)
                 break
 
             # If response was empty then wait and try again
@@ -81,6 +83,8 @@ class QLinkConn(object):
             SYMBOL,#ROWS,[DTCEPS]
             Example: IBM,200,DTPSEC
         """
+        if self.ts_client is None:
+            self.ts_client = ddec.DDEClient(self.app_name, 'ts')
 
         # Create main request message
         message = "{},{},{}".format(symbol, count, fields)
@@ -93,12 +97,13 @@ class QLinkConn(object):
 
             # Break from loop if response is not empty
             if response.count('\n') < len(response):
-                print("QLinkConn-Trades(SUCCESS)")
+                print("QLinkConn-Trades(%s SUCCESS)" % symbol)
                 break
 
             # If response was empty then wait and try again
             if i <= QLinkConn.MAX_TRIES:
                 print("QLinkConn-Trades(NO DATA RETURNED). Trying %s more time%s..." % (i-1, 's' if i > 1 else ''))
+            print('sleeping...')
             time.sleep(QLinkConn.WAIT)
 
         # Get dtypes
@@ -203,10 +208,18 @@ if __name__ == "__main__":
 
     st = datetime.now()
 
-    symbol = 'VOD-LON'
+    symbol = 'FFF M7-TIX'
     qlink = QLinkConn()
-    bars1 = qlink.get_bars(symbol, count=500, period=5)
-    trades1 = qlink.get_trades(symbol, count=500)
+    # bars1 = qlink.get_bars(symbol, count=50, period=1)
+    trades1 = qlink.get_trades(symbol, count=20)
+    print(trades1)
+
+    while True:
+        qlink = QLinkConn()
+        latest = qlink.get_trades(symbol, count=1).squeeze()
+        if (latest != trades1.iloc[-1]).all():
+            print(latest)
+        # time.sleep(1)
 
     print('Time Elapsed: %s' % (datetime.now() - st))
 

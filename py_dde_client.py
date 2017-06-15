@@ -245,11 +245,12 @@ def WinMSGLoop():
 
 
 if __name__ == "__main__":
+    symbol = "OQ #V-DME"
     # Create a connection to ESOTS (OTS Swardfish) and to instrument MAR11 ALSI
-    dde = DDEClient("QLINK", "TS")
-
+    dde = DDEClient("QLINK", "ts")
+    # TODO: debug advise statement as it currently doesn't return callbacks
     # Monitor the various attributes from MAR11 ALSI
-    dde.advise("$SPX,5,DTPS")    # Last bid quantity
+    dde.advise("%s,10,DTPS" % symbol)    # Last bid quantity
     # dde.advise("BIDP")    # Last bid price
     # dde.advise("ASKP")    # Last ask price
     # dde.advise("ASKQ")    # Last ask quantity
@@ -259,3 +260,5 @@ if __name__ == "__main__":
 
     # Run the main message loop to receive advices
     WinMSGLoop()
+
+    print("finished")
