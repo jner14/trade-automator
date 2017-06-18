@@ -2,8 +2,9 @@ import pandas as pd
 # from py_qlink import QLinkConn
 from time import sleep
 from datetime import datetime, time, timedelta
-from xlintegrator import get_reporting, get_latest, FieldLabels as labels, Config, set_reporting, \
-    set_reporting_prev_close, get_existing, get_monitoring, L2_auto_trade, get_reporting_day, get_reporting_prev_close
+from xlintegrator import get_reporting, get_latest, FieldLabels as labels, Config, set_reporting, L2_get_status, \
+    set_reporting_prev_close, get_existing, get_monitoring, L2_auto_trade, get_reporting_day, get_reporting_prev_close, \
+    get_prev_close, CONV_RATE, EXCH_CODE, SYMBOLS
 from consolidation_breakout import consol_breakout
 from trade_utils import change_time
 import re
@@ -35,25 +36,73 @@ while True:
     first_second = time_now.second
     print("The time is %s" % time_now.strftime(TIME_FORMAT))
 
-    # TODO: fix this for times when program is started after market hours have begun
-    if time_now < change_time(Config.MARKET_OPEN, -1) or time_now > Config.MARKET_CLOSE:
-        print("Market hours are configured as {} - {}".format(Config.MARKET_OPEN.strftime(TIME_FORMAT),
-                                                              Config.MARKET_CLOSE.strftime(TIME_FORMAT)))
-        prev_close = get_latest()
-        print("Will proceed after market hours begin.")
-    elif change_time(Config.MARKET_OPEN, -1) < time_now < Config.MARKET_OPEN:
-        prev_close = get_latest()
-        print("Beginning in less than one minute.")
-    else:
-        prev_close = get_reporting_prev_close()
+    # # TODO: fix this for times when program is started after market hours have begun
+    # if time_now < change_time(Config.MARKET_OPEN, -1) or time_now > Config.MARKET_CLOSE:
+    #     print("Market hours are configured as {} - {}".format(Config.MARKET_OPEN.strftime(TIME_FORMAT),
+    #                                                           Config.MARKET_CLOSE.strftime(TIME_FORMAT)))
+    #     prev_close = get_latest()
+    #     print("Will proceed after market hours begin.")
+    # elif change_time(Config.MARKET_OPEN, -1) < time_now < Config.MARKET_OPEN:
+    #     prev_close = get_latest()
+    #     print("Beginning in less than one minute.")
+    # else:
+    #     # comp_names = get_latest().index
+    #     set_reporting_prev_close()
+    #     prev_close_rep = get_reporting_prev_close()
+    #     prev_close = get_prev_close()
+    set_reporting_prev_close()
+    prev_close_rep = get_reporting_prev_close()
+    prev_close = get_prev_close()
 
+    # Waiting
+    orders_sent = False
     while (time_now < Config.MARKET_OPEN or time_now > Config.MARKET_CLOSE):
-        # Update config options
-        Config.get_config_options()
+
+        # Send orders to L2 Auto Trade 3 seconds before the open
+        if Config.MARKET_OPEN > time_now > change_time(Config.MARKET_OPEN, -1) and not orders_sent:
+            seconds_before = 3.0
+            time_left = 60.0 - seconds_before - time_now.second + time_now.microsecond / 1e6
+            print("\nExecuting orders in %s seconds" % time_left)
+            sleep(time_left)
+            print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
+            print("Executing orders...")
+            # If certain conditions are met then make an order using L2 Auto Trader
+            for k, v in get_reporting().iterrows():
+                # If values have been entered for, Buy/Sell, % Limit, Target, and Trade Amount then create an order
+                if (v[labels.LIMIT_PCT] != "" and v[labels.TARGET] != "" and v[labels.TRADE_AMT] != ""
+                        and (v[labels.BUY_SELL] == 1 or v[labels.BUY_SELL] == 2)):
+                    # Calculate the limit price based off of the close previous to reporting day
+                    if v[labels.BUY_SELL] == 1:
+                        limit_price = (1 + .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
+                    else:
+                        limit_price = (1 - .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
+
+                    # TODO: create SYMBOLS df with both esignal and ig symbols
+                    # TODO: comment this section out and copy to running after new bar creation
+                    # Grab currency using the ig symbol
+                    ig_symbol = SYMBOLS.loc[k, 'IG Symbol'].split('.')[-1]
+                    currency = EXCH_CODE.loc[ig_symbol, 'Currency']
+
+                    # Calculate number of shares using the trade amount, conversion rate, and limit price
+                    num_shares = int((v[labels.TRADE_AMT] * 1000.0 * CONV_RATE.loc[currency, 'Conversion Rate']) / limit_price)
+                    # Send order (symbol, side, price, size, order_type, good_til, expiry="", stop="")
+                    L2_auto_trade(symbol=k,
+                                  side=v[labels.BUY_SELL],
+                                  price=limit_price,
+                                  size=num_shares,
+                                  order_type=1,  # Market
+                                  good_til=1,  # Good Till Cancel
+                                  )
+            orders_sent = True
+            print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
+            print("Finished...")
+
         if datetime.now().second == first_second:
+            # Update config options
+            Config.get_config_options()
             print('.')
         else:
-            print("."),
+            print('.'),
         # Wait a second and check time again
         sleep(1)
         time_now = datetime.now().time()
@@ -171,13 +220,6 @@ while True:
         #             reporting_table.loc[k, labels.TRIGGERS] = "ConBreak"
         set_reporting(reporting_table)
 
-        # # If certain conditions are met then make an order using L2 Auto Trader
-        # for k, v in reporting_table.iterrows():
-        #     # If values have been entered for, Buy or Sell, % Limit, Target, and Trade Amount then create an order
-        #     if (v[labels.LIMIT] != ""
-        #         and v[labels.TARGET] != ""
-        #         and v[labels.TRADE_SZ] != ""
-        #         and (v[labels.BUY] != "" or v[labels.SELL] != "" )):
 
 
 print("Finished")
