@@ -226,8 +226,8 @@ def xl_ts_2_datetime(xldate):
 
 
 def L2_auto_trade(company, side, price, trade_amt, order_type, good_til, expiry="", stop=""):
-    # if expiry != "":
-    #     expiry = '"%s"' % expiry
+    if expiry != "":
+        expiry = '"%s"' % expiry
 
     # Grab currency using the ig symbol
     ig_symbol = SYMBOLS.loc[company, 'IG Tickers']

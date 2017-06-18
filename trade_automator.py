@@ -168,6 +168,8 @@ while True:
             bars[k].loc[nanMsk, 'Open'] = bars[k].loc[nanMsk, 'Close']
             bars[k].loc[nanMsk, 'High'] = bars[k].loc[nanMsk, 'Close']
             bars[k].loc[nanMsk, 'Low'] = bars[k].loc[nanMsk, 'Close']
+            print("[DEBUG] symbol=%s, last_bar=%s" % (k, list(bars[k].iloc[-1])))
+
 
         # # Print time elapsed since starting marker
         # print('Time Elapsed: %s' % (datetime.now() - st))
@@ -235,7 +237,8 @@ while True:
                               price=limit_price,
                               trade_amt=v[labels.TRADE_AMT],
                               order_type=2,  # Limit
-                              good_til=0,  # Day
+                              good_til=6,  # Day
+                              expiry="27/06/2017"
                               )
 
 print("Finished")
