@@ -37,9 +37,9 @@ while True:
     print("The time is %s" % time_now.strftime(TIME_FORMAT))
 
     # # TODO: fix this for times when program is started after market hours have begun
-    # if time_now < change_time(Config.MARKET_OPEN, -1) or time_now > Config.MARKET_CLOSE:
-    #     print("Market hours are configured as {} - {}".format(Config.MARKET_OPEN.strftime(TIME_FORMAT),
-    #                                                           Config.MARKET_CLOSE.strftime(TIME_FORMAT)))
+    if time_now < change_time(Config.MARKET_OPEN, -1) or time_now > Config.MARKET_CLOSE:
+        print("Market hours are configured as {} - {}".format(Config.MARKET_OPEN.strftime(TIME_FORMAT),
+                                                              Config.MARKET_CLOSE.strftime(TIME_FORMAT)))
     #     prev_close = get_latest()
     #     print("Will proceed after market hours begin.")
     # elif change_time(Config.MARKET_OPEN, -1) < time_now < Config.MARKET_OPEN:
@@ -51,51 +51,41 @@ while True:
     #     prev_close_rep = get_reporting_prev_close()
     #     prev_close = get_prev_close()
     set_reporting_prev_close()
-    prev_close_rep = get_reporting_prev_close()
-    prev_close = get_prev_close()
 
     # Waiting
     orders_sent = False
     while (time_now < Config.MARKET_OPEN or time_now > Config.MARKET_CLOSE):
 
-        # Send orders to L2 Auto Trade 3 seconds before the open
-        if Config.MARKET_OPEN > time_now > change_time(Config.MARKET_OPEN, -1) and not orders_sent:
-            seconds_before = 3.0
-            time_left = 60.0 - seconds_before - time_now.second + time_now.microsecond / 1e6
-            print("\nExecuting orders in %s seconds" % time_left)
-            sleep(time_left)
-            print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
-            print("Executing orders...")
-            # If certain conditions are met then make an order using L2 Auto Trader
-            for k, v in get_reporting().iterrows():
-                # If values have been entered for, Buy/Sell, % Limit, Target, and Trade Amount then create an order
-                if (v[labels.LIMIT_PCT] != "" and v[labels.TARGET] != "" and v[labels.TRADE_AMT] != ""
-                        and (v[labels.BUY_SELL] == 1 or v[labels.BUY_SELL] == 2)):
-                    # Calculate the limit price based off of the close previous to reporting day
-                    if v[labels.BUY_SELL] == 1:
-                        limit_price = (1 + .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
-                    else:
-                        limit_price = (1 - .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
-
-                    # TODO: create SYMBOLS df with both esignal and ig symbols
-                    # TODO: comment this section out and copy to running after new bar creation
-                    # Grab currency using the ig symbol
-                    ig_symbol = SYMBOLS.loc[k, 'IG Symbol'].split('.')[-1]
-                    currency = EXCH_CODE.loc[ig_symbol, 'Currency']
-
-                    # Calculate number of shares using the trade amount, conversion rate, and limit price
-                    num_shares = int((v[labels.TRADE_AMT] * 1000.0 * CONV_RATE.loc[currency, 'Conversion Rate']) / limit_price)
-                    # Send order (symbol, side, price, size, order_type, good_til, expiry="", stop="")
-                    L2_auto_trade(symbol=k,
-                                  side=v[labels.BUY_SELL],
-                                  price=limit_price,
-                                  size=num_shares,
-                                  order_type=1,  # Market
-                                  good_til=1,  # Good Till Cancel
-                                  )
-            orders_sent = True
-            print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
-            print("Finished...")
+        # # Send orders to L2 Auto Trade 3 seconds before the open
+        # if Config.MARKET_OPEN > time_now > change_time(Config.MARKET_OPEN, -1) and not orders_sent:
+        #     seconds_before = 3.0
+        #     time_left = 60.0 - seconds_before - time_now.second + time_now.microsecond / 1e6
+        #     print("\nExecuting orders in %s seconds" % time_left)
+        #     sleep(time_left)
+        #     print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
+        #     print("Executing orders...")
+        #     # If certain conditions are met then make an order using L2 Auto Trader
+        #     for k, v in get_reporting().iterrows():
+        #         # If values have been entered for, Buy/Sell, % Limit, Target, and Trade Amount then create an order
+        #         if (v[labels.LIMIT_PCT] != "" and v[labels.TARGET] != "" and v[labels.TRADE_AMT] != ""
+        #                 and (v[labels.BUY_SELL] == 1 or v[labels.BUY_SELL] == 2)):
+        #             # Calculate the limit price based off of the close previous to reporting day
+        #             if v[labels.BUY_SELL] == 1:
+        #                 limit_price = (1 + .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
+        #             else:
+        #                 limit_price = (1 - .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
+        #
+        #             # Send order (company, side, price, trade_amt, order_type, good_til, expiry="", stop="")
+        #             L2_auto_trade(company=SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == 'VOD-LON')].index[0],
+        #                           side=v[labels.BUY_SELL],
+        #                           price=limit_price,
+        #                           trade_amt=v[labels.TRADE_AMT],
+        #                           order_type=2,     # Limit
+        #                           good_til=0,       # Day
+        #                           )
+        #     orders_sent = True
+        #     print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
+        #     print("Finished...")
 
         if datetime.now().second == first_second:
             # Update config options
@@ -134,6 +124,9 @@ while True:
     print("Waiting %s seconds" % time_left)
     sleep(time_left)
 
+    prev_close_rep = get_reporting_prev_close()
+    prev_close = get_prev_close()
+
     ### Grab latest price and volume
     #     POLL_LABELS = ['Last', 'Volume']
     assert prev_close is not None, "prev_close has not been gathered"
@@ -149,16 +142,21 @@ while True:
 
     ### At the close of a bar, create new bars and run algos
     BAR_SIZE = 5
-    if (time_now.minute % BAR_SIZE == 0 and (5 > time_now.second or time_now.second > 55)):
+    if (time_now.minute % BAR_SIZE == 0 and (5 > time_now.second or time_now.second > 55)) or True:
 
         # Create 5 minute bars at the end of every bar
         assert len(poll_data) > 0, "poll_data has not been gathered"
         for k, v in poll_data.iteritems():
+            if len(v) == 0:
+                continue
             # Create empty DataFrames for any new symbols in poll_data
             # if k not in bars.keys():
             bars[k] = pd.DataFrame(columns=BAR_LABELS)
             # Resample poll_data into 5 minute bars
-            resampled = v.resample('%dT' % BAR_SIZE)
+            try:
+                resampled = v.resample('%dT' % BAR_SIZE)
+            except:
+                print("stop")
             bars[k]['Open'] = resampled['Last'].first()
             bars[k]['High'] = resampled['Last'].max()
             bars[k]['Low'] = resampled['Last'].min()
@@ -220,6 +218,24 @@ while True:
         #             reporting_table.loc[k, labels.TRIGGERS] = "ConBreak"
         set_reporting(reporting_table)
 
+        # If certain conditions are met then make an order using L2 Auto Trader
+        for k, v in get_reporting().iterrows():
+            # If values have been entered for, Buy/Sell, % Limit, Target, and Trade Amount then create an order
+            if (v[labels.LIMIT_PCT] != "" and v[labels.TRADE_AMT] != ""  # and v[labels.TARGET] != ""
+                    and (v[labels.BUY_SELL] == 1 or v[labels.BUY_SELL] == 2)):
+                # Calculate the limit price based off of the close previous to reporting day
+                if v[labels.BUY_SELL] == 1:
+                    limit_price = (1 + .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
+                else:
+                    limit_price = (1 - .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
 
+                # Send order (company, side, price, trade_amt, order_type, good_til, expiry="", stop="")
+                L2_auto_trade(company=SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0],
+                              side=v[labels.BUY_SELL],
+                              price=limit_price,
+                              trade_amt=v[labels.TRADE_AMT],
+                              order_type=2,  # Limit
+                              good_til=0,  # Day
+                              )
 
 print("Finished")

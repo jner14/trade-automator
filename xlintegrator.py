@@ -38,7 +38,7 @@ forex_sht = wb.sheets('Forex')
 # Grab conversion rate, exchange code, and symbol tables
 CONV_RATE = forex_sht.range('B2').options(pd.DataFrame, expand='table').value
 EXCH_CODE = forex_sht.range('F2').options(pd.DataFrame, expand='table').value
-SYMBOLS = None
+SYMBOLS = pd.read_excel('Shared Files\\MasterFileAT.xls', 'Link to Excel', index_col=0).dropna()
 
 
 # Create field label variables using a class to utilize dot notation
@@ -108,7 +108,7 @@ def get_prev_close():
     while True:
         try:
             # TODO: consider running set_reporting_prev_close before, waiting to populate, then running the values
-            return data_sht.range('Y2:AD2').options(pd.DataFrame, expand='vertical').value.fillna("")
+            return data_sht.range('Y2:AD2').options(pd.DataFrame, expand='vertical').value.fillna("").drop("")
         except Exception as e:
                 exception_msg(e, 'data')
 
@@ -219,25 +219,39 @@ def get_reporting_day():
 
 
 def xl_ts_2_datetime(xldate):
+    assert type(xldate) == float, '[ERROR][xl_ts_2_datetime] xldate=%s is not a valid float value' % xldate
     temp = datetime(1899, 12, 30)
     delta = timedelta(days=xldate)
     return temp + delta
 
 
-def L2_auto_trade(symbol, side, price, size, order_type, good_til, expiry="", stop=""):
+def L2_auto_trade(company, side, price, trade_amt, order_type, good_til, expiry="", stop=""):
     # if expiry != "":
     #     expiry = '"%s"' % expiry
+
+    # Grab currency using the ig symbol
+    ig_symbol = SYMBOLS.loc[company, 'IG Tickers']
+    currency = EXCH_CODE.loc[ig_symbol.split('.')[-1], 'Currency']
+
+    if currency == 'USD':
+        conv_rate = 1
+    else:
+        conv_rate = CONV_RATE.loc[currency, 'Conversion Rate']
+
+    # Calculate number of shares using the trade amount, conversion rate, and limit price
+    trade_size = int((trade_amt * 1000.0 * conv_rate) / price)
+
+    # Create L2Send text
     message = '=L2Send("{}","{}",{},{},{},{},{},{},{})'.format(Config.L2_ACCT,
-                                                               symbol,
+                                                               ig_symbol,
                                                                side,
                                                                price,
-                                                               size,
+                                                               trade_size,
                                                                order_type,
                                                                good_til,
                                                                expiry,
                                                                stop)
     if not Config.L2_ENABLED:
-        print("L2 Auto Trade is simulating trades only. ")
         msg = "FAKE#%s" % random.randint(100000, 999999)
     else:
         msg = message
@@ -249,20 +263,30 @@ def L2_auto_trade(symbol, side, price, size, order_type, good_til, expiry="", st
             time_now = datetime.now().replace(microsecond=0)
 
             orders_sht.range('B%s' % new_loc).value = [time_now,
-                                                       symbol,
+                                                       company,
                                                        msg,
                                                        "",
                                                        "",
                                                        "",
                                                        side,
                                                        price,
-                                                       size,
+                                                       trade_amt,
+                                                       trade_size,
                                                        order_type,
                                                        good_til,
                                                        expiry,
                                                        stop,
                                                        message[1:]]
-            print("The following order has been sent: %s" % message)
+            if not Config.L2_ENABLED:
+                print("The following SIMULATED order has been sent: %s" % message)
+            else:
+                print("The following order has been sent: %s" % message)
+
+            # Remove order info from reporting tab
+            reporting = get_reporting()
+            esig_symbol = SYMBOLS.loc[company, "eSignal Tickers"]
+            reporting.loc[esig_symbol, FieldLabels.BUY_SELL] = "sent"
+            set_reporting(reporting)
             return
         except Exception as e:
             exception_msg(e, 'orders')
@@ -272,7 +296,7 @@ def L2_get_status():
     while True:
         try:
             # Ger order IDs
-            orders = orders_sht.range('B2:O2').options(pd.DataFrame, expand='vertical').value.fillna("")
+            orders = orders_sht.range('B2:P2').options(pd.DataFrame, expand='vertical').value.fillna("")
             break
         except Exception as e:
             exception_msg(e, 'orders')
@@ -281,7 +305,7 @@ def L2_get_status():
     for k, v in orders['Order ID'].iteritems():
         if not Config.L2_ENABLED:
             orders.loc[k, 'Status'] = "Filled"
-            orders.loc[k, 'Filled Amount'] = orders.loc[k, 'Size']
+            orders.loc[k, 'Filled Amount'] = orders.loc[k, 'Trade Size']
             orders.loc[k, 'Average Price'] = orders.loc[k, 'Order Price']
         elif orders.loc[k, 'Status'] == "":
             orders.loc[k, 'Status'] = "=L2OrderStatus(%s)" % v
@@ -305,13 +329,14 @@ def L2_get_status():
 
 if __name__ == '__main__':
 
-    latest_prices = get_latest()
-    reporting_day = get_reporting_day()
-    reporting_table = get_reporting()
+    # latest_prices = get_latest()
+    # reporting_day = get_reporting_day()
+    # reporting_table = get_reporting()
     # reporting_table[FieldLabels.REPORT_DATE].iloc[0] = datetime.now().date()
     # reporting_table.sort_index(inplace=True)
     # set_reporting(reporting_table, fields=[])
     # set_reporting(reporting_table, fields=[FieldLabels.REPORT_DATE])
     # prev_close = get_reporting_prev_close()
+    pass
 
 print("[OK] xlintegrator imported")
