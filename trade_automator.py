@@ -142,7 +142,7 @@ while True:
 
     ### At the close of a bar, create new bars and run algos
     BAR_SIZE = 5
-    if (time_now.minute % BAR_SIZE == 0 and (5 > time_now.second or time_now.second > 55)) or True:
+    if (time_now.minute % BAR_SIZE == 0 and (5 > time_now.second or time_now.second > 55)):
 
         # Create 5 minute bars at the end of every bar
         assert len(poll_data) > 0, "poll_data has not been gathered"

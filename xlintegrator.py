@@ -94,7 +94,7 @@ def float_to_time(value):
 def get_reporting():
     while True:
         try:
-            df = reporting_sht.range('B2').options(pd.DataFrame, expand='table').value
+            df = reporting_sht.range('B2:O53').options(pd.DataFrame).value.drop("")
             break
         except Exception as e:
             exception_msg(e, 'reporting')
