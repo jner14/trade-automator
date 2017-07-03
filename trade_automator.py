@@ -4,8 +4,8 @@ from time import sleep
 from datetime import datetime, time, timedelta
 from xlintegrator import get_reporting, get_latest, FieldLabels as labels, Config, set_reporting, L2_get_status, \
     set_reporting_prev_close, get_existing, get_monitoring, L2_auto_trade, get_reporting_day, get_reporting_prev_close, \
-    get_prev_close, CONV_RATE, EXCH_CODE, SYMBOLS
-from consolidation_breakout import consol_breakout
+    get_prev_close, CONV_RATE, EXCH_CODE, SYMBOLS, saxo_create_order
+from algos import consolidation_breakout
 from trade_utils import change_time
 import re
 
@@ -180,7 +180,7 @@ while True:
         # for k, v in bars.iteritems():
         #     breakouts[k] = []
         #     if len(v) >= 5:
-        #         breakouts[k] = consol_breakout(v)
+        #         breakouts[k] = consolidation_breakout(v)
 
         reporting_table = get_reporting()
 
@@ -192,19 +192,22 @@ while True:
         # Check for price move 1% or 2%
         for k, v in bars.iteritems():
             if k not in reporting_table.index: continue
-            if .99 * prev_close.loc[k, 'Last'] > v.ix[-1, 'Close'] or v.ix[-1, 'Close'] > 1.01 * prev_close.loc[k, 'Last']:
-                if "1%Change" not in reporting_table.loc[k, labels.TRIGGERS]:
-                    if reporting_table.loc[k, labels.TRIGGERS] != "":
-                        reporting_table.loc[k, labels.TRIGGERS] += ",1%Change"
-                    else:
-                        reporting_table.loc[k, labels.TRIGGERS] = "1%Change"
+            try:
+                if .99 * prev_close.loc[k, 'Last'] > v.ix[-1, 'Close'] or v.ix[-1, 'Close'] > 1.01 * prev_close.loc[k, 'Last']:
+                    if "1%Change" not in reporting_table.loc[k, labels.TRIGGERS]:
+                        if reporting_table.loc[k, labels.TRIGGERS] != "":
+                            reporting_table.loc[k, labels.TRIGGERS] += ",1%Change"
+                        else:
+                            reporting_table.loc[k, labels.TRIGGERS] = "1%Change"
 
-            if .98 * prev_close.loc[k, 'Last'] > v.ix[-1, 'Close'] or v.ix[-1, 'Close']  > 1.02 * prev_close.loc[k, 'Last']:
-                if "2%Change" not in reporting_table.loc[k, labels.TRIGGERS]:
-                    if reporting_table.loc[k, labels.TRIGGERS] != "":
-                        reporting_table.loc[k, labels.TRIGGERS] += ",2%Change"
-                    else:
-                        reporting_table.loc[k, labels.TRIGGERS] = "2%Change"
+                if .98 * prev_close.loc[k, 'Last'] > v.ix[-1, 'Close'] or v.ix[-1, 'Close']  > 1.02 * prev_close.loc[k, 'Last']:
+                    if "2%Change" not in reporting_table.loc[k, labels.TRIGGERS]:
+                        if reporting_table.loc[k, labels.TRIGGERS] != "":
+                            reporting_table.loc[k, labels.TRIGGERS] += ",2%Change"
+                        else:
+                            reporting_table.loc[k, labels.TRIGGERS] = "2%Change"
+            except Exception as e:
+                print(e)
 
         # for k, v in reporting_table.iterrows():
         #     price_req = re.(v[labels.ENTRY_REQ])
@@ -220,7 +223,8 @@ while True:
         #             reporting_table.loc[k, labels.TRIGGERS] = "ConBreak"
         set_reporting(reporting_table)
 
-        # If certain conditions are met then make an order using L2 Auto Trader
+        # If certain conditions are met then make an order using SAXO OpenAPI for excel
+        # TODO: switch prev_close_rep to prev_close
         for k, v in get_reporting().iterrows():
             # If values have been entered for, Buy/Sell, % Limit, Target, and Trade Amount then create an order
             if (v[labels.LIMIT_PCT] != "" and v[labels.TRADE_AMT] != ""  # and v[labels.TARGET] != ""
@@ -231,14 +235,14 @@ while True:
                 else:
                     limit_price = (1 - .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
 
-                # Send order (company, side, price, trade_amt, order_type, good_til, expiry="", stop="")
-                L2_auto_trade(company=SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0],
-                              side=v[labels.BUY_SELL],
-                              price=limit_price,
-                              trade_amt=v[labels.TRADE_AMT],
-                              order_type=2,  # Limit
-                              good_til=6,  # Day
-                              expiry="27/06/2017"
-                              )
+                # Send order (company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded")
+                saxo_create_order(company=SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0],
+                                  asset_type='Stock',
+                                  trade_amt=v[labels.TRADE_AMT],
+                                  side=v[labels.BUY_SELL],
+                                  duration='DayOrder',
+                                  order_type='Limit',
+                                  price=limit_price,
+                                  )
 
 print("Finished")

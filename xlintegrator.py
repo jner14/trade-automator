@@ -11,19 +11,14 @@ from time import sleep
 WORKBOOK_FILENAME = 'trade-dashboard.xlsm'
 DEBUG = True
 
+# Connect to the excel workbook
 # Make sure trade-dashboard.xlsm is already open
 try:
-    with open(WORKBOOK_FILENAME, "a") as workbook:
-        raise AssertionError
-except IOError as e:
-    print("[OK] %s appears to be running" % WORKBOOK_FILENAME)
-except AssertionError as e:
+    wb = xw.books[WORKBOOK_FILENAME]
+    print("[OK] successfully connected to the excel workbook")
+except KeyError as e:
     print("[ERROR] Open %s before running this program!" % WORKBOOK_FILENAME)
     sys.exit()
-
-# Connect to the excel workbook, open if not already open
-wb = xw.Book(WORKBOOK_FILENAME)
-print("[OK] successfully connected to the excel workbook")
 
 # Connect to each of the sheets
 reporting_sht = wb.sheets('Reporting')
@@ -58,6 +53,9 @@ class Config:
     MARKET_CLOSE = None
     L2_ACCT = None
     L2_ENABLED = None
+    SAXO_ACCT = None
+    SAXO_ACCT_KEY = None
+    SAXO_ENABLED = None
 
     def __init__(self):
         pass
@@ -72,6 +70,9 @@ class Config:
                 Config.MARKET_CLOSE = float_to_time(config_sht.range('B6').value)
                 Config.L2_ACCT = config_sht.range('B7').value
                 Config.L2_ENABLED = config_sht.range('B8').value
+                Config.SAXO_ACCT = config_sht.range('B9').value
+                Config.SAXO_ACCT_KEY = config_sht.range('B10').value
+                Config.SAXO_ENABLED = config_sht.range('B11').value
                 break
             except Exception as e:
                 exception_msg(e, 'config')
@@ -105,12 +106,22 @@ def get_reporting():
 
 
 def get_prev_close():
+    prev_close = None
     while True:
         try:
             # TODO: consider running set_reporting_prev_close before, waiting to populate, then running the values
-            return data_sht.range('Y2:AD2').options(pd.DataFrame, expand='vertical').value.fillna("").drop("")
+            prev_close = data_sht.range('Y2:AD2').options(pd.DataFrame, expand='vertical').value.fillna("").drop("")
+            break
         except Exception as e:
                 exception_msg(e, 'data')
+    # Return values if data pull was successful
+    if prev_close is not None and (prev_close['Last'] == "").sum() == 0 and (prev_close['Volume'] == "").sum() == 0:
+        return prev_close
+    else:
+        # Notify of data issue
+        print("[ERROR] Latest data pull came back with empty values. " +
+              "Ensure Qlink is running and the data sheet is updating all cells.")
+        sys.exit()
 
 
 def get_reporting_prev_close():
@@ -135,6 +146,7 @@ def set_reporting_prev_close():
     # all_groups = all_groups[~empty_mask]
     all_groups.loc[empty_mask, FieldLabels.REPORT_DATE] = datetime.now().date()
     all_groups['Prev Close Date'] = all_groups[FieldLabels.REPORT_DATE] - timedelta(days=1)
+    all_groups.drop(None, inplace=True)
 
     while True:
         try:
@@ -206,6 +218,14 @@ def get_latest():
 
     latest = pd.concat([latest_reporting, latest_existing, latest_monitoring])
     latest.drop("", inplace=True)
+
+    # Check if data pulled has empty values
+    if (latest['Last'] == "").sum() > 0 or (latest['Volume'] == "").sum() > 0 or (latest['Last Time'] == "").sum() > 0:
+        # Notify of data issue
+        print("[ERROR] Latest data pull came back with empty values. " +
+              "Ensure Qlink is running and the data sheet is updating all cells.")
+        sys.exit()
+
     latest['Last Time'] = latest['Last Time'].apply(lambda x: xl_ts_2_datetime(x))
     return latest.fillna("")
 
@@ -252,7 +272,7 @@ def L2_auto_trade(company, side, price, trade_amt, order_type, good_til, expiry=
                                                                expiry,
                                                                stop)
     if not Config.L2_ENABLED:
-        msg = "FAKE#%s" % random.randint(100000, 999999)
+        msg = "SIM#%s" % random.randint(100000, 999999)
     else:
         msg = message
     while True:
@@ -322,6 +342,80 @@ def L2_get_status():
         try:
             # Update orders table with updated array
             orders_sht.range('B2').value = orders
+            return
+        except Exception as e:
+            exception_msg(e, 'orders')
+
+
+def saxo_create_order(company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded"):
+
+    # Grab currency using the ig symbol
+    ig_symbol = SYMBOLS.loc[company, 'IG Tickers']
+    currency = EXCH_CODE.loc[ig_symbol.split('.')[-1], 'Currency']
+
+    if currency == 'USD':
+        conv_rate = 1
+    else:
+        conv_rate = CONV_RATE.loc[currency, 'Conversion Rate']
+
+    # Calculate number of shares using the trade amount, conversion rate, and limit price
+    if price != 0.0:
+        trade_size = int((trade_amt * 1000.0 * conv_rate) / price)
+    else:
+        print(['[DEBUG] SAXO_CREATE_ORDER - must pass the limit or last price'])
+        sys.exit()
+
+    # Create Saxo order function text
+    message = '=OpenApiPlaceOrder("{}","{}","{}",{},"{}","{}","{}",{}'.format(Config.SAXO_ACCT_KEY,
+                                                                              SYMBOLS.loc[company, 'Saxo Tickers'],
+                                                                              asset_type,
+                                                                              trade_size,
+                                                                              'Buy' if side == 1 else 'Sell',
+                                                                              duration,
+                                                                              order_type,
+                                                                              price)
+    if take_profit is not None:
+        message += ',%s' % take_profit
+    if stop is not None:
+        message += ',{},"{}"'.format(stop, stop_type)
+    message += ')'
+
+    if not Config.SAXO_ENABLED:
+        msg = "SIM#%s" % random.randint(100000, 999999)
+    else:
+        msg = message
+    while True:
+        try:
+            # Get the order count
+            curr_orders = orders_sht.range('C2').options(pd.DataFrame, expand='vertical').value
+            new_loc = len(curr_orders) + 3
+            time_now = datetime.now().replace(microsecond=0)
+            # TODO: add take profit and any other missing fields below
+            orders_sht.range('B%s' % new_loc).value = [time_now,
+                                                       company,
+                                                       msg,
+                                                       "",
+                                                       "",
+                                                       "",
+                                                       side,
+                                                       price,
+                                                       trade_amt,
+                                                       trade_size,
+                                                       order_type,
+                                                       duration,
+                                                       "",
+                                                       '{}:{}'.format(stop, stop_type),
+                                                       message[1:]]
+            if not Config.SAXO_ENABLED:
+                print("The following SIMULATED order has been sent: %s" % message)
+            else:
+                print("The following order has been sent: %s" % message)
+
+            # Remove order info from reporting tab
+            reporting = get_reporting()
+            esig_symbol = SYMBOLS.loc[company, "eSignal Tickers"]
+            reporting.loc[esig_symbol, FieldLabels.BUY_SELL] = "sent"
+            set_reporting(reporting)
             return
         except Exception as e:
             exception_msg(e, 'orders')
