@@ -52,40 +52,71 @@ while True:
     #     prev_close = get_prev_close()
     set_reporting_prev_close()
 
-    # Waiting
+    # Waiting until market opens
     orders_sent = False
     while (time_now < Config.MARKET_OPEN or time_now > Config.MARKET_CLOSE):
 
-        # # Send orders to L2 Auto Trade 3 seconds before the open
-        # if Config.MARKET_OPEN > time_now > change_time(Config.MARKET_OPEN, -1) and not orders_sent:
-        #     seconds_before = 3.0
-        #     time_left = 60.0 - seconds_before - time_now.second + time_now.microsecond / 1e6
-        #     print("\nExecuting orders in %s seconds" % time_left)
-        #     sleep(time_left)
-        #     print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
-        #     print("Executing orders...")
-        #     # If certain conditions are met then make an order using L2 Auto Trader
-        #     for k, v in get_reporting().iterrows():
-        #         # If values have been entered for, Buy/Sell, % Limit, Target, and Trade Amount then create an order
-        #         if (v[labels.LIMIT_PCT] != "" and v[labels.TARGET] != "" and v[labels.TRADE_AMT] != ""
-        #                 and (v[labels.BUY_SELL] == 1 or v[labels.BUY_SELL] == 2)):
-        #             # Calculate the limit price based off of the close previous to reporting day
-        #             if v[labels.BUY_SELL] == 1:
-        #                 limit_price = (1 + .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
-        #             else:
-        #                 limit_price = (1 - .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
-        #
-        #             # Send order (company, side, price, trade_amt, order_type, good_til, expiry="", stop="")
-        #             L2_auto_trade(company=SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == 'VOD-LON')].index[0],
-        #                           side=v[labels.BUY_SELL],
-        #                           price=limit_price,
-        #                           trade_amt=v[labels.TRADE_AMT],
-        #                           order_type=2,     # Limit
-        #                           good_til=0,       # Day
-        #                           )
-        #     orders_sent = True
-        #     print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
-        #     print("Finished...")
+        # Send orders to Saxo 3 seconds before the open
+        if Config.MARKET_OPEN > time_now > change_time(Config.MARKET_OPEN, -1) and not orders_sent:
+            seconds_before = 3.0
+            time_left = 60.0 - seconds_before - time_now.second + time_now.microsecond / 1e6
+            print("\nExecuting orders in %s seconds" % time_left)
+            sleep(time_left)
+            print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
+            print("Executing orders...")
+            # If certain conditions are met then make an order
+            for k, v in get_reporting().iterrows():
+                # If values have been entered for, Buy/Sell, % Limit, Trade Amount, and one of the exit columns (target%, stop, EOD) then create an order
+                if (v[labels.LIMIT_PCT] != "" and v[labels.TRADE_AMT] != "" and
+                        (v[labels.BUY_SELL] == 1 or v[labels.BUY_SELL] == 2) and
+                        (v[labels.TARGET] != "" or v[labels.STOP_LOSS] != "" or v[labels.EOD_EXIT] != "")):
+
+                    # Calculate the limit price based off of the close previous to reporting day
+                    if v[labels.BUY_SELL] == 1:
+                        limit_price = (1 + .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
+                    else:
+                        limit_price = (1 - .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
+
+                    # Calculate the stop loss
+                    stop_str = v[labels.STOP_LOSS]
+                    if stop_str != '' and stop_str != 0 and not None:
+                        multiplier = 1.0 if v[labels.BUY_SELL] == 2 else -1.0
+                        try:
+                            stop_loss = limit_price + multiplier * abs(float(stop_str))
+                        except:
+                            stop_loss = None
+                            print('[ERROR] "%s" is not a valid stop loss value' % stop_str)
+                    else:
+                        stop_loss = None
+
+                    # Calculate the take profit price
+                    target_str = v[labels.TARGET]
+                    if target_str != '' and target_str != 0 and not None:
+                        multiplier = 1.0 if v[labels.BUY_SELL] == 1 else -1.0
+                        try:
+                            target_flt = abs(float(target_str))
+                            target_price = (1. + target_flt * multiplier) * limit_price
+                        except:
+                            target_price = None
+                            print('[ERROR] "%s" is not a valid target percent value' % target_str)
+                    else:
+                        target_price = None
+
+                    # Send order (company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded")
+                    saxo_create_order(company=SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0],
+                                      asset_type='CfdOnStock',
+                                      trade_amt=v[labels.TRADE_AMT],
+                                      side=v[labels.BUY_SELL],
+                                      duration='DayOrder',
+                                      order_type='Limit',
+                                      price=limit_price,
+                                      take_profit=target_price,
+                                      stop=stop_loss,
+                                      )
+
+            orders_sent = True
+            print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
+            print("Finished...")
 
         if datetime.now().second == first_second:
             # Update config options
@@ -223,26 +254,56 @@ while True:
         #             reporting_table.loc[k, labels.TRIGGERS] = "ConBreak"
         set_reporting(reporting_table)
 
-        # If certain conditions are met then make an order using SAXO OpenAPI for excel
         # TODO: switch prev_close_rep to prev_close
+        # If certain conditions are met then make an order
         for k, v in get_reporting().iterrows():
-            # If values have been entered for, Buy/Sell, % Limit, Target, and Trade Amount then create an order
-            if (v[labels.LIMIT_PCT] != "" and v[labels.TRADE_AMT] != ""  # and v[labels.TARGET] != ""
-                    and (v[labels.BUY_SELL] == 1 or v[labels.BUY_SELL] == 2)):
+
+            # If values have been entered for, Buy/Sell, % Limit, Trade Amount, and one of the exit columns (target%, stop, EOD) then create an order
+            if (v[labels.LIMIT_PCT] != "" and v[labels.TRADE_AMT] != "" and
+                    (v[labels.BUY_SELL] == 1 or v[labels.BUY_SELL] == 2) and
+                    (v[labels.TARGET] != "" or v[labels.STOP_LOSS] != "" or v[labels.EOD_EXIT] != "")):
+
                 # Calculate the limit price based off of the close previous to reporting day
                 if v[labels.BUY_SELL] == 1:
                     limit_price = (1 + .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
                 else:
                     limit_price = (1 - .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
 
+                # Calculate the stop loss
+                stop_str = v[labels.STOP_LOSS]
+                if stop_str != '' and stop_str != 0 and not None:
+                    multiplier = 1.0 if v[labels.BUY_SELL] == 2 else -1.0
+                    try:
+                        stop_loss = limit_price + multiplier * abs(float(stop_str))
+                    except:
+                        stop_loss = None
+                        print('[ERROR] "%s" is not a valid stop loss value' % stop_str)
+                else:
+                    stop_loss = None
+
+                # Calculate the take profit price
+                target_str = v[labels.TARGET]
+                if target_str != '' and target_str != 0 and not None:
+                    multiplier = 1.0 if v[labels.BUY_SELL] == 1 else -1.0
+                    try:
+                        target_flt = abs(float(target_str))
+                        target_price = (1. + target_flt * multiplier) * limit_price
+                    except:
+                        target_price = None
+                        print('[ERROR] "%s" is not a valid target percent value' % target_str)
+                else:
+                    target_price = None
+
                 # Send order (company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded")
                 saxo_create_order(company=SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0],
-                                  asset_type='Stock',
+                                  asset_type='CfdOnStock',
                                   trade_amt=v[labels.TRADE_AMT],
                                   side=v[labels.BUY_SELL],
                                   duration='DayOrder',
                                   order_type='Limit',
                                   price=limit_price,
+                                  take_profit=target_price,
+                                  stop=stop_loss,
                                   )
 
 print("Finished")

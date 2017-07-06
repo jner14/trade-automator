@@ -38,8 +38,8 @@ SYMBOLS = pd.read_excel('Shared Files\\MasterFileAT.xls', 'Link to Excel', index
 
 # Create field label variables using a class to utilize dot notation
 class FieldLabels:
-    ALL_LABELS = "News Type	Re-rater, De-rater and Conviction	Trade Triggers	Buy/Sell	% Limit	Target % Price Change	Trade Amount (KUSD)	Reporting Date	Reporting Time	Short Term Price Strength	Long Term Price Strength	Entry Requirements	Exit Requirements".split('\t')
-    NEWS, CONVICTION, TRIGGERS, BUY_SELL, LIMIT_PCT, TARGET, TRADE_AMT, REPORT_DATE, REPORT_TIME, SHORT_STRENGTH, LONG_STRENGTH, ENTRY_REQ, EXIT_REQ = ALL_LABELS
+    ALL_LABELS = "News Type	Re-rater, De-rater and Conviction	Trade Triggers	Buy/Sell	% Limit	Target % Price Change	Stop Loss	EOD Exit	Trade Amount (KUSD)	Reporting Date	Reporting Time	Short Term Price Strength	Long Term Price Strength	Entry Requirements	Exit Requirements".split('\t')
+    NEWS, CONVICTION, TRIGGERS, BUY_SELL, LIMIT_PCT, TARGET, STOP_LOSS, EOD_EXIT, TRADE_AMT, REPORT_DATE, REPORT_TIME, SHORT_STRENGTH, LONG_STRENGTH, ENTRY_REQ, EXIT_REQ = ALL_LABELS
     FIELD_IDS = dict(zip(ALL_LABELS, [x + '2' for x in string.uppercase[2: 2 + len(ALL_LABELS)]]))
 
     def __init__(self):
@@ -54,6 +54,7 @@ class Config:
     L2_ACCT = None
     L2_ENABLED = None
     SAXO_ACCT = None
+    SAXO_CLIENT_KEY = None
     SAXO_ACCT_KEY = None
     SAXO_ENABLED = None
 
@@ -71,8 +72,9 @@ class Config:
                 Config.L2_ACCT = config_sht.range('B7').value
                 Config.L2_ENABLED = config_sht.range('B8').value
                 Config.SAXO_ACCT = config_sht.range('B9').value
-                Config.SAXO_ACCT_KEY = config_sht.range('B10').value
-                Config.SAXO_ENABLED = config_sht.range('B11').value
+                Config.SAXO_CLIENT_KEY = config_sht.range('B10').value
+                Config.SAXO_ACCT_KEY = config_sht.range('B11').value
+                Config.SAXO_ENABLED = config_sht.range('B12').value
                 break
             except Exception as e:
                 exception_msg(e, 'config')
@@ -380,32 +382,26 @@ def saxo_create_order(company, asset_type, trade_amt, side, duration="DayOrder",
         message += ',{},"{}"'.format(stop, stop_type)
     message += ')'
 
+    # Alter the message to indicate it is simulated if so
     if not Config.SAXO_ENABLED:
         msg = "SIM#%s" % random.randint(100000, 999999)
     else:
         msg = message
+
+    # Update dashboard and send order
     while True:
         try:
             # Get the order count
-            curr_orders = orders_sht.range('C2').options(pd.DataFrame, expand='vertical').value
+            curr_orders = orders_sht.range('T2').options(pd.DataFrame, expand='vertical').value
             new_loc = len(curr_orders) + 3
             time_now = datetime.now().replace(microsecond=0)
             # TODO: add take profit and any other missing fields below
-            orders_sht.range('B%s' % new_loc).value = [time_now,
-                                                       company,
-                                                       msg,
-                                                       "",
-                                                       "",
-                                                       "",
-                                                       side,
-                                                       price,
-                                                       trade_amt,
-                                                       trade_size,
-                                                       order_type,
-                                                       duration,
-                                                       "",
-                                                       '{}:{}'.format(stop, stop_type),
-                                                       message[1:]]
+
+            # Update order sheet, sending order too
+            reporting_sht.range('T%s' % new_loc).value = [company,
+                                                          msg,
+                                                          message[1:],
+                                                          time_now]
             if not Config.SAXO_ENABLED:
                 print("The following SIMULATED order has been sent: %s" % message)
             else:
