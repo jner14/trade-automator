@@ -142,7 +142,7 @@ def get_reporting_prev_close():
 
 
 def set_reporting_prev_close():
-    reporting, existing, monitoring = get_reporting(), get_existing(), get_monitoring()
+    reporting, existing, monitoring = get_reporting(), get_net_positions(), get_monitoring()
     reporting['Group'] = 'Reporting'
     existing['Group'] = 'Existing'
     monitoring['Group'] = 'Monitoring'
@@ -185,16 +185,32 @@ def set_reporting(df, fields=['all']):
                 exception_msg(e, 'reporting')
 
 
-def get_existing():
+def get_net_positions():
     while True:
         try:
-            df = existing_sht.range('B2').options(pd.DataFrame, expand='table').value
+            df = existing_sht.range('B2:G2').options(pd.DataFrame, expand='vertical').value.dropna()
             break
         except Exception as e:
-                exception_msg(e, 'existing')
+                exception_msg(e, 'existing-net')
 
-    if df[FieldLabels.REPORT_DATE].dtype == '<M8[ns]':
-        df[FieldLabels.REPORT_DATE] = df[FieldLabels.REPORT_DATE].apply(lambda x: x.date())
+    # Drop net positions that are square
+    df = df[df['KUSD'] != 0]
+
+    # Switch Saxo tickers out for eSignal tickers
+    df.index = [SYMBOLS.loc[(SYMBOLS['Saxo Tickers'] == k), 'eSignal Tickers'] for k in df.index]
+    return df.fillna("")
+
+
+def get_all_positions():
+    while True:
+        try:
+            df = existing_sht.range('J2:Q2').options(pd.DataFrame, expand='vertical').value.dropna()
+            break
+        except Exception as e:
+                exception_msg(e, 'existing-all')
+    time_lbl = "ExecutionTimeOpen"
+    if df[time_lbl].dtype == '<M8[ns]':
+        df[time_lbl] = df[time_lbl].apply(lambda x: x.date())
     return df.fillna("")
 
 
@@ -478,6 +494,7 @@ def check_for_orders():
                     target_side = 1
                 else:
                     target_side = None
+                # Get target float value
                 try:
                     target_flt = abs(float(target_str))
                     target_price = (1. + target_flt * multiplier) * prev_close.loc[k, 'Last']
@@ -492,7 +509,8 @@ def check_for_orders():
                             'trade_amt': TRANCHE_SZ[k],
                             'side': target_side,
                             'price': (1 + i * Config.TRANCHE_GAP) * target_price,
-                            'valid_from': v[FieldLabels.REPORT_DATE]})
+                            'valid_from': v[FieldLabels.REPORT_DATE],
+                            'order_type': 'target-limit'})
 
             # Send order (company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded")
             saxo_create_order(company=company,

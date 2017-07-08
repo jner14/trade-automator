@@ -3,8 +3,8 @@ import pandas as pd
 from time import sleep
 from datetime import datetime, time, timedelta
 from xlintegrator import get_reporting, get_latest, FieldLabels as labels, Config, set_reporting, L2_get_status, \
-    set_reporting_prev_close, get_existing, get_monitoring, L2_auto_trade, get_reporting_day, get_reporting_prev_close, \
-    get_prev_close, CONV_RATE, EXCH_CODE, SYMBOLS, saxo_create_order, check_for_orders
+    set_reporting_prev_close, get_net_positions, get_monitoring, L2_auto_trade, get_reporting_day, get_reporting_prev_close, \
+    get_prev_close, CONV_RATE, EXCH_CODE, SYMBOLS, saxo_create_order, check_for_orders, TRANCHE_SZ
 from algos import consolidation_breakout
 from trade_utils import change_time
 import re
@@ -25,6 +25,33 @@ while True:
 
     # Update config options
     Config.get_config_options()
+
+    # If its the first run then generate stop orders for current positions
+    if first_run:
+        # Get current positions
+        existing = get_net_positions()
+
+        # Create future stop loss orders
+        prev_close = get_prev_close()
+
+        for k, v in existing.iterrows():
+            tranche_cnt = (v['Amount'] / TRANCHE_SZ[k])
+            start_range = -tranche_cnt + int(.5 * tranche_cnt + .5)
+            end_range = tranche_cnt - int(.5 * tranche_cnt)
+            # Create tranche orders
+            for i in range(start_range, end_range):
+                company = SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0]
+                side = 1 if v['Amount'] < 0 else 2
+                multiplier = 1.0 if side == 1 else -1.0
+                stop_price = (1. + .01 * multiplier) * prev_close.loc[k, 'Last']
+                future_orders.append({
+                    'company': company,
+                    'trade_amt': TRANCHE_SZ[k],
+                    'side': side,
+                    'price': (1 + i * Config.TRANCHE_GAP) * stop_price,
+                    'valid_from': v[datetime.now().date()],
+                    'order_type': 'trailing-stop-market'
+                })
 
     ### Wait until market opens
     time_now = datetime.now().time()
@@ -80,7 +107,7 @@ while True:
     ### Collect some data from excel and update empty reporting day fields
     # Get tables
     reporting_table = get_reporting()
-    existing_table = get_existing()
+    # existing_table = get_net_positions()
     monitoring_table = get_monitoring()
 
     # Set reporting date to today's date if it is currently None or NaT, i.e. empty
@@ -212,19 +239,38 @@ while True:
     ### If it is the end of the day then exit necessary trades
     # TODO: add end of day exit feature
 
-    # Check for future orders that have met their price requirement and send them
+    # Update trailing-stop order prices
+    for order in future_orders:
+        comp = order['company']
+        if order['order_type'] in ['trailing-stop-market', 'trailing-stop-limit']:
+            last = latest.loc[SYMBOLS.loc[comp, 'eSignal Tickers'], 'Last']
+            # If the price is greater than 1% different from stop price, update price
+            if abs(1 - last / order['price']) > 0.01:
+                if order['side'] == 1:
+                    order['price'] = round(1.01 * last, 2)
+                else:
+                    order['price'] = round(0.99 * last, 2)
+
+    # Check for future orders that have met their price and time requirements and send them
     # TODO: test future orders
     for order in future_orders[::-1]:
         comp = order['company']
         if (((poll_data[comp].iloc[-1]['Last'] <= order['price'] and order['side'] == 1) or
                 (poll_data[comp].iloc[-1]['Last'] >= order['price'] and order['side'] == 2))
                 and datetime.now().date() >= order['valid_from']):
+            if 'limit' in order['order_type']:
+                order_type = 'Limit'
+            elif 'limit' in order['order_type']:
+                order_type = 'Market'
+            else:
+                print('[WARNING] future order not placed! order_type=%s is not valid. Must contain limit or market.' % order['order_type'])
+                continue
             saxo_create_order(company=comp,
                               asset_type='CfdOnStock',
                               trade_amt=order['trade_amt'],
                               side=order['side'],
                               duration='DayOrder',
-                              order_type='Limit',
+                              order_type=order_type,
                               price=order['price']
                               )
             # Remove sent orders

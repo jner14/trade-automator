@@ -22,6 +22,10 @@ class TestXLIntegrator(TestCase):
         self.assertIsNotNone(reporting)
         self.assertIsNot(len(reporting), 0)
 
+    def test_get_net_positions(self):
+        existing = xlint.get_net_positions()
+        print('Existing Net Positions\n%s' % existing)
+
     def test_get_config_options(self):
         self.assertIsNotNone(xlint.Config.AUTO_SORT)
         self.assertIsNotNone(xlint.Config.AUTO_REPORT_DATE)
