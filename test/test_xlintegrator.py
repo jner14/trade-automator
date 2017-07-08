@@ -14,6 +14,14 @@ class TestXLIntegrator(TestCase):
         xlint.Config.get_config_options()
         super(TestXLIntegrator, cls).setUpClass()
 
+    def test_field_labels(self):
+        reporting = xlint.get_reporting()[xlint.FieldLabels.ALL_LABELS]
+
+    def test_get_reporting(self):
+        reporting = xlint.get_reporting()
+        self.assertIsNotNone(reporting)
+        self.assertIsNot(len(reporting), 0)
+
     def test_get_config_options(self):
         self.assertIsNotNone(xlint.Config.AUTO_SORT)
         self.assertIsNotNone(xlint.Config.AUTO_REPORT_DATE)

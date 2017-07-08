@@ -28,18 +28,21 @@ data_sht = wb.sheets('Data')
 config_sht = wb.sheets('Config')
 orders_sht = wb.sheets('Orders')
 forex_sht = wb.sheets('Forex')
+tranche_sht = wb.sheets('Tranche Size')
 
 
 # Grab conversion rate, exchange code, and symbol tables
 CONV_RATE = forex_sht.range('B2').options(pd.DataFrame, expand='table').value
 EXCH_CODE = forex_sht.range('F2').options(pd.DataFrame, expand='table').value
 SYMBOLS = pd.read_excel('Shared Files\\MasterFileAT.xls', 'Link to Excel', index_col=0).dropna()
+# TODO: add tranche size sheet and load it in the line below
+TRANCHE_SZ = tranche_sht.range('B2').options(pd.DataFrame, expand='table').value.dropna()
 
 
 # Create field label variables using a class to utilize dot notation
 class FieldLabels:
-    ALL_LABELS = "News Type	Re-rater, De-rater and Conviction	Trade Triggers	Buy/Sell	% Limit	Target % Price Change	Stop Loss	EOD Exit	Trade Amount (KUSD)	Reporting Date	Reporting Time	Short Term Price Strength	Long Term Price Strength	Entry Requirements	Exit Requirements".split('\t')
-    NEWS, CONVICTION, TRIGGERS, BUY_SELL, LIMIT_PCT, TARGET, STOP_LOSS, EOD_EXIT, TRADE_AMT, REPORT_DATE, REPORT_TIME, SHORT_STRENGTH, LONG_STRENGTH, ENTRY_REQ, EXIT_REQ = ALL_LABELS
+    ALL_LABELS = "News Type	Re-rater, De-rater and Conviction	Trade Triggers	Buy/Sell	Limit % From Prev Close	Stretch Limit % From Prev Close	Target % From Prev Close	Stop Loss % From Prev Close	EOD Exit	Trade Amount (KUSD)	Reporting Date	Reporting Time	Short Term Price Strength	Long Term Price Strength	Entry Requirements	Exit Requirements".split('\t')
+    NEWS, CONVICTION, TRIGGERS, BUY_SELL, LIMIT_PCT, STRETCH_LIMIT, TARGET_PCT, STOP_LOSS, EOD_EXIT, TRADE_AMT, REPORT_DATE, REPORT_TIME, SHORT_STRENGTH, LONG_STRENGTH, ENTRY_REQ, EXIT_REQ = ALL_LABELS
     FIELD_IDS = dict(zip(ALL_LABELS, [x + '2' for x in string.uppercase[2: 2 + len(ALL_LABELS)]]))
 
     def __init__(self):
@@ -57,6 +60,7 @@ class Config:
     SAXO_CLIENT_KEY = None
     SAXO_ACCT_KEY = None
     SAXO_ENABLED = None
+    TRANCHE_GAP = None
 
     def __init__(self):
         pass
@@ -75,6 +79,7 @@ class Config:
                 Config.SAXO_CLIENT_KEY = config_sht.range('B10').value
                 Config.SAXO_ACCT_KEY = config_sht.range('B11').value
                 Config.SAXO_ENABLED = config_sht.range('B12').value
+                Config.TRANCHE_GAP = config_sht.range('B13').value
                 break
             except Exception as e:
                 exception_msg(e, 'config')
@@ -97,7 +102,8 @@ def float_to_time(value):
 def get_reporting():
     while True:
         try:
-            df = reporting_sht.range('B2:O53').options(pd.DataFrame).value.drop("")
+            end = FieldLabels.FIELD_IDS[FieldLabels.ALL_LABELS[-1]]
+            df = reporting_sht.range('B2:%s53' % end[:-1]).options(pd.DataFrame).value.drop("").drop(None)
             break
         except Exception as e:
             exception_msg(e, 'reporting')
@@ -113,17 +119,17 @@ def get_prev_close():
         try:
             # TODO: consider running set_reporting_prev_close before, waiting to populate, then running the values
             prev_close = data_sht.range('Y2:AD2').options(pd.DataFrame, expand='vertical').value.fillna("").drop("")
-            break
         except Exception as e:
                 exception_msg(e, 'data')
-    # Return values if data pull was successful
-    if prev_close is not None and (prev_close['Last'] == "").sum() == 0 and (prev_close['Volume'] == "").sum() == 0:
-        return prev_close
-    else:
-        # Notify of data issue
-        print("[ERROR] Latest data pull came back with empty values. " +
-              "Ensure Qlink is running and the data sheet is updating all cells.")
-        sys.exit()
+        # Return values if data pull was successful
+        if prev_close is not None and (prev_close['Last'] == "").sum() == 0 and (prev_close['Volume'] == "").sum() == 0:
+            return prev_close
+        else:
+            # Notify of data issue
+            print("[ERROR] Latest data pull came back with empty values. " +
+                  "Ensure Qlink is running and the data sheet is updating all cells.")
+            sleep(2)
+            # sys.exit()
 
 
 def get_reporting_prev_close():
@@ -148,7 +154,8 @@ def set_reporting_prev_close():
     # all_groups = all_groups[~empty_mask]
     all_groups.loc[empty_mask, FieldLabels.REPORT_DATE] = datetime.now().date()
     all_groups['Prev Close Date'] = all_groups[FieldLabels.REPORT_DATE] - timedelta(days=1)
-    all_groups.drop(None, inplace=True)
+    if None in all_groups.index:
+        all_groups.drop(None, inplace=True)
 
     while True:
         try:
@@ -367,19 +374,28 @@ def saxo_create_order(company, asset_type, trade_amt, side, duration="DayOrder",
         print(['[DEBUG] SAXO_CREATE_ORDER - must pass the limit or last price'])
         sys.exit()
 
+    # Get side string
+    if side == 1 or side == '1':
+        side_str = 'Buy'
+    elif side == 2 or side == '2':
+        side_str = 'Sell'
+    else:
+        print('[WARNING] Value passed for order side is not valid, ORDER NOT SENT!')
+        return
+
     # Create Saxo order function text
     message = '=OpenApiPlaceOrder("{}","{}","{}",{},"{}","{}","{}",{}'.format(Config.SAXO_ACCT_KEY,
                                                                               SYMBOLS.loc[company, 'Saxo Tickers'],
                                                                               asset_type,
                                                                               trade_size,
-                                                                              'Buy' if side == 1 else 'Sell',
+                                                                              side_str,
                                                                               duration,
                                                                               order_type,
-                                                                              price)
+                                                                              round(price, 2))
     if take_profit is not None:
-        message += ',%s' % take_profit
+        message += ',%s' % round(take_profit, 2)
     if stop is not None:
-        message += ',{},"{}"'.format(stop, stop_type)
+        message += ',{},"{}"'.format(round(stop, 2), stop_type)
     message += ')'
 
     # Alter the message to indicate it is simulated if so
@@ -398,7 +414,7 @@ def saxo_create_order(company, asset_type, trade_amt, side, duration="DayOrder",
             # TODO: add take profit and any other missing fields below
 
             # Update order sheet, sending order too
-            reporting_sht.range('T%s' % new_loc).value = [company,
+            orders_sht.range('T%s' % new_loc).value = [company,
                                                           msg,
                                                           message[1:],
                                                           time_now]
@@ -415,6 +431,81 @@ def saxo_create_order(company, asset_type, trade_amt, side, duration="DayOrder",
             return
         except Exception as e:
             exception_msg(e, 'orders')
+
+
+def check_for_orders():
+    prev_close = get_prev_close()
+    future_orders = []
+
+    # TODO: switch prev_close_rep to prev_close
+    # If certain conditions are met then make an order
+    for k, v in get_reporting().iterrows():
+
+        # If values have been entered for, Buy/Sell, % Limit, Trade Amount, and one of the exit columns (target%, stop, EOD) then create an order
+        if (v[FieldLabels.LIMIT_PCT] != "" and v[FieldLabels.TRADE_AMT] != "" and
+                (v[FieldLabels.BUY_SELL] == 1 or v[FieldLabels.BUY_SELL] == 2) and
+                (v[FieldLabels.TARGET_PCT] != "" or v[FieldLabels.STOP_LOSS] != "" or v[FieldLabels.EOD_EXIT] != "")):
+
+            company = SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0]
+            side = v[FieldLabels.BUY_SELL]
+
+            # Calculate the limit price based off of the close previous to reporting day
+            limit_price = (1 + v[FieldLabels.LIMIT_PCT]) * prev_close.loc[k, 'Last']
+
+            # Calculate the stop loss
+            stop_str = v[FieldLabels.STOP_LOSS]
+            if stop_str != '' and stop_str != 0 and not None:
+                multiplier = 1.0 if v[FieldLabels.BUY_SELL] == 2 else -1.0
+                try:
+                    stop_loss = limit_price * (1 + multiplier * abs(float(stop_str)))
+                except:
+                    stop_loss = None
+                    print('[ERROR] "%s" is not a valid stop loss value' % stop_str)
+            else:
+                stop_loss = None
+
+            # Define the target % future orders
+            target_str = v[FieldLabels.TARGET_PCT]
+            if target_str != '' and target_str != 0 and not None:
+                tranche_cnt = (v[FieldLabels.TRADE_AMT] / TRANCHE_SZ[k])
+                start_range = -tranche_cnt + int(.5 * tranche_cnt + .5)
+                end_range = tranche_cnt - int(.5 * tranche_cnt)
+                multiplier = 1.0 if v[FieldLabels.BUY_SELL] == 1 else -1.0
+                # Get target_side
+                if side == 1 or side == '1':
+                    target_side = 2
+                elif side == 2 or side == '2':
+                    target_side = 1
+                else:
+                    target_side = None
+                try:
+                    target_flt = abs(float(target_str))
+                    target_price = (1. + target_flt * multiplier) * prev_close.loc[k, 'Last']
+                except:
+                    target_price = None
+                    print('[ERROR] "%s" is not a valid target percent value' % target_str)
+                # Create tranche orders to return as future orders
+                if target_price is not None:
+                    for i in range(start_range, end_range):
+                        future_orders.append({
+                            'company': company,
+                            'trade_amt': TRANCHE_SZ[k],
+                            'side': target_side,
+                            'price': (1 + i * Config.TRANCHE_GAP) * target_price,
+                            'valid_from': v[FieldLabels.REPORT_DATE]})
+
+            # Send order (company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded")
+            saxo_create_order(company=company,
+                              asset_type='CfdOnStock',
+                              trade_amt=v[FieldLabels.TRADE_AMT],
+                              side=side,
+                              duration='DayOrder',
+                              order_type='Limit',
+                              price=limit_price,
+                              stop=stop_loss,
+                              )
+
+            return future_orders
 
 
 if __name__ == '__main__':

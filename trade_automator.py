@@ -4,7 +4,7 @@ from time import sleep
 from datetime import datetime, time, timedelta
 from xlintegrator import get_reporting, get_latest, FieldLabels as labels, Config, set_reporting, L2_get_status, \
     set_reporting_prev_close, get_existing, get_monitoring, L2_auto_trade, get_reporting_day, get_reporting_prev_close, \
-    get_prev_close, CONV_RATE, EXCH_CODE, SYMBOLS, saxo_create_order
+    get_prev_close, CONV_RATE, EXCH_CODE, SYMBOLS, saxo_create_order, check_for_orders
 from algos import consolidation_breakout
 from trade_utils import change_time
 import re
@@ -14,29 +14,24 @@ BAR_LABELS = ['Open', 'High', 'Low', 'Close', 'Volume']
 POLL_LABELS = ['Last', 'Volume']
 TIME_FORMAT = "%I:%M:%S %p"
 UPDATE_INTERVAL = 15  # seconds
+IGNORE_MKT_HRS = True
 
 period = 1
 poll_data = {}
 first_run = True
 bars = {}
+future_orders = []
 while True:
 
     # Update config options
     Config.get_config_options()
-    # TODO: considering monitoring tables and only updating their dependant tables when there are changes
-    # Implied usage scenario: user starts app before market opens and it captures the last price and volume
-    #    and then waits until it changes to record the first bar open then continues to check every 15 seconds
-    #    updating the current bars high and low. Then if minute mod 5 == 0 then set close of current bar to the most
-    #    recent last value, setting the current last as the open to a new bar.
-
-    # Secondary usage scenario: user starts app during market hours.
 
     ### Wait until market opens
     time_now = datetime.now().time()
     first_second = time_now.second
     print("The time is %s" % time_now.strftime(TIME_FORMAT))
 
-    # # TODO: fix this for times when program is started after market hours have begun
+    # TODO: fix this for times when program is started after market hours have begun
     if time_now < change_time(Config.MARKET_OPEN, -1) or time_now > Config.MARKET_CLOSE:
         print("Market hours are configured as {} - {}".format(Config.MARKET_OPEN.strftime(TIME_FORMAT),
                                                               Config.MARKET_CLOSE.strftime(TIME_FORMAT)))
@@ -54,7 +49,7 @@ while True:
 
     # Waiting until market opens
     orders_sent = False
-    while (time_now < Config.MARKET_OPEN or time_now > Config.MARKET_CLOSE):
+    while (time_now < Config.MARKET_OPEN or time_now > Config.MARKET_CLOSE) and not IGNORE_MKT_HRS:
 
         # Send orders to Saxo 3 seconds before the open
         if Config.MARKET_OPEN > time_now > change_time(Config.MARKET_OPEN, -1) and not orders_sent:
@@ -65,54 +60,7 @@ while True:
             print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
             print("Executing orders...")
             # If certain conditions are met then make an order
-            for k, v in get_reporting().iterrows():
-                # If values have been entered for, Buy/Sell, % Limit, Trade Amount, and one of the exit columns (target%, stop, EOD) then create an order
-                if (v[labels.LIMIT_PCT] != "" and v[labels.TRADE_AMT] != "" and
-                        (v[labels.BUY_SELL] == 1 or v[labels.BUY_SELL] == 2) and
-                        (v[labels.TARGET] != "" or v[labels.STOP_LOSS] != "" or v[labels.EOD_EXIT] != "")):
-
-                    # Calculate the limit price based off of the close previous to reporting day
-                    if v[labels.BUY_SELL] == 1:
-                        limit_price = (1 + .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
-                    else:
-                        limit_price = (1 - .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
-
-                    # Calculate the stop loss
-                    stop_str = v[labels.STOP_LOSS]
-                    if stop_str != '' and stop_str != 0 and not None:
-                        multiplier = 1.0 if v[labels.BUY_SELL] == 2 else -1.0
-                        try:
-                            stop_loss = limit_price + multiplier * abs(float(stop_str))
-                        except:
-                            stop_loss = None
-                            print('[ERROR] "%s" is not a valid stop loss value' % stop_str)
-                    else:
-                        stop_loss = None
-
-                    # Calculate the take profit price
-                    target_str = v[labels.TARGET]
-                    if target_str != '' and target_str != 0 and not None:
-                        multiplier = 1.0 if v[labels.BUY_SELL] == 1 else -1.0
-                        try:
-                            target_flt = abs(float(target_str))
-                            target_price = (1. + target_flt * multiplier) * limit_price
-                        except:
-                            target_price = None
-                            print('[ERROR] "%s" is not a valid target percent value' % target_str)
-                    else:
-                        target_price = None
-
-                    # Send order (company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded")
-                    saxo_create_order(company=SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0],
-                                      asset_type='CfdOnStock',
-                                      trade_amt=v[labels.TRADE_AMT],
-                                      side=v[labels.BUY_SELL],
-                                      duration='DayOrder',
-                                      order_type='Limit',
-                                      price=limit_price,
-                                      take_profit=target_price,
-                                      stop=stop_loss,
-                                      )
+            check_for_orders()
 
             orders_sent = True
             print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
@@ -172,7 +120,8 @@ while True:
                 poll_data[k].ix[-1, 'Volume'] -= poll_data[k].ix[0:-1, 'Volume'].sum()
 
     ### At the close of a bar, create new bars and run algos
-    BAR_SIZE = 5
+    BAR_SIZE = 1
+    time_now = datetime.now().time()
     if (time_now.minute % BAR_SIZE == 0 and (5 > time_now.second or time_now.second > 55)):
 
         # Create 5 minute bars at the end of every bar
@@ -192,7 +141,7 @@ while True:
             bars[k]['High'] = resampled['Last'].max()
             bars[k]['Low'] = resampled['Last'].min()
             bars[k]['Close'] = resampled['Last'].last()
-            bars[k]['Volume'] = resampled['Volume'].sum()
+            bars[k]['Volume'] = resampled['Volume'].sum().fillna(0)
             # Fill empty bars with previous close
             nanMsk = bars[k]['Open'].isnull()
             bars[k]['Close'] = bars[k]['Close'].ffill()
@@ -254,56 +203,32 @@ while True:
         #             reporting_table.loc[k, labels.TRIGGERS] = "ConBreak"
         set_reporting(reporting_table)
 
-        # TODO: switch prev_close_rep to prev_close
-        # If certain conditions are met then make an order
-        for k, v in get_reporting().iterrows():
+        # TODO: remove this check_for_orders call after testing
+        future_orders += check_for_orders()
 
-            # If values have been entered for, Buy/Sell, % Limit, Trade Amount, and one of the exit columns (target%, stop, EOD) then create an order
-            if (v[labels.LIMIT_PCT] != "" and v[labels.TRADE_AMT] != "" and
-                    (v[labels.BUY_SELL] == 1 or v[labels.BUY_SELL] == 2) and
-                    (v[labels.TARGET] != "" or v[labels.STOP_LOSS] != "" or v[labels.EOD_EXIT] != "")):
+    ### For any orders that have a stretch limit check for unfilled orders
+    # TODO: add stretch limit orders feature
 
-                # Calculate the limit price based off of the close previous to reporting day
-                if v[labels.BUY_SELL] == 1:
-                    limit_price = (1 + .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
-                else:
-                    limit_price = (1 - .01 * v[labels.LIMIT_PCT]) * prev_close_rep.loc[k, 'Last']
+    ### If it is the end of the day then exit necessary trades
+    # TODO: add end of day exit feature
 
-                # Calculate the stop loss
-                stop_str = v[labels.STOP_LOSS]
-                if stop_str != '' and stop_str != 0 and not None:
-                    multiplier = 1.0 if v[labels.BUY_SELL] == 2 else -1.0
-                    try:
-                        stop_loss = limit_price + multiplier * abs(float(stop_str))
-                    except:
-                        stop_loss = None
-                        print('[ERROR] "%s" is not a valid stop loss value' % stop_str)
-                else:
-                    stop_loss = None
+    # Check for future orders that have met their price requirement and send them
+    # TODO: test future orders
+    for order in future_orders[::-1]:
+        comp = order['company']
+        if (((poll_data[comp].iloc[-1]['Last'] <= order['price'] and order['side'] == 1) or
+                (poll_data[comp].iloc[-1]['Last'] >= order['price'] and order['side'] == 2))
+                and datetime.now().date() >= order['valid_from']):
+            saxo_create_order(company=comp,
+                              asset_type='CfdOnStock',
+                              trade_amt=order['trade_amt'],
+                              side=order['side'],
+                              duration='DayOrder',
+                              order_type='Limit',
+                              price=order['price']
+                              )
+            # Remove sent orders
+            future_orders.remove(order)
 
-                # Calculate the take profit price
-                target_str = v[labels.TARGET]
-                if target_str != '' and target_str != 0 and not None:
-                    multiplier = 1.0 if v[labels.BUY_SELL] == 1 else -1.0
-                    try:
-                        target_flt = abs(float(target_str))
-                        target_price = (1. + target_flt * multiplier) * limit_price
-                    except:
-                        target_price = None
-                        print('[ERROR] "%s" is not a valid target percent value' % target_str)
-                else:
-                    target_price = None
-
-                # Send order (company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded")
-                saxo_create_order(company=SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0],
-                                  asset_type='CfdOnStock',
-                                  trade_amt=v[labels.TRADE_AMT],
-                                  side=v[labels.BUY_SELL],
-                                  duration='DayOrder',
-                                  order_type='Limit',
-                                  price=limit_price,
-                                  take_profit=target_price,
-                                  stop=stop_loss,
-                                  )
 
 print("Finished")
