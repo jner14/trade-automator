@@ -4,6 +4,8 @@ import random
 import sys
 import xlwings as xw
 import pandas as pd
+from pandas.tseries.offsets import BDay
+pd.set_option('expand_frame_repr', False)
 from datetime import datetime, time, date, timedelta
 import string
 from time import sleep
@@ -39,11 +41,22 @@ SYMBOLS = pd.read_excel('Shared Files\\MasterFileAT.xls', 'Link to Excel', index
 TRANCHE_SZ = tranche_sht.range('B2').options(pd.DataFrame, expand='table').value.dropna()
 
 
-# Create field label variables using a class to utilize dot notation
-class FieldLabels:
-    ALL_LABELS = "News Type	Re-rater, De-rater and Conviction	Trade Triggers	Buy/Sell	Limit % From Prev Close	Stretch Limit % From Prev Close	Target % From Prev Close	Stop Loss % From Prev Close	EOD Exit	Trade Amount (KUSD)	Reporting Date	Reporting Time	Short Term Price Strength	Long Term Price Strength	Entry Requirements	Exit Requirements".split('\t')
-    NEWS, CONVICTION, TRIGGERS, BUY_SELL, LIMIT_PCT, STRETCH_LIMIT, TARGET_PCT, STOP_LOSS, EOD_EXIT, TRADE_AMT, REPORT_DATE, REPORT_TIME, SHORT_STRENGTH, LONG_STRENGTH, ENTRY_REQ, EXIT_REQ = ALL_LABELS
-    FIELD_IDS = dict(zip(ALL_LABELS, [x + '2' for x in string.uppercase[2: 2 + len(ALL_LABELS)]]))
+# Create field label variables for the reporting sheet using a class to utilize dot notation
+class rep_lbls:
+    ALL_LBLS = "News Type	Re-rater, De-rater and Conviction	Trade Triggers	Buy/Sell	Limit % From Prev Close	Stretch Limit % From Prev Close	Target % From Prev Close	Stop Loss % From Prev Close	EOD Exit	Trade Amount (KUSD)	Reporting Date	Reporting Time	Short Term Price Strength	Long Term Price Strength	Entry Requirements	Exit Requirements".split('\t')
+    NEWS, CONVICTION, TRIGGERS, BUY_SELL, LIMIT_PCT, STRETCH_LIMIT, TARGET_PCT, STOP_LOSS, EOD_EXIT, TRADE_AMT, REPORT_DATE, REPORT_TIME, SHORT_STRENGTH, LONG_STRENGTH, ENTRY_REQ, EXIT_REQ = ALL_LBLS
+    FLD_IDS = dict(zip(ALL_LBLS, [x + '2' for x in string.uppercase[2: 2 + len(ALL_LBLS)]]))
+
+    def __init__(self):
+        pass
+
+
+# Create field label variables for the existing sheet using a class to utilize dot notation
+class net_lbls:
+    ALL_LBLS = "eSignal Symbol	Symbol	Amount	Currency	AverageOpenPrice	Exchange Rate	KUSD	Re-rater, De-rater and Conviction	Reporting Date".split('\t')
+    ESIGNAL_SYMBOL, SAXO_SYMBOL, AMOUNT, CURRENCY, AVE_PRICE, EXCH_RATE, TRADE_AMT, CONVICTION, REPORT_DATE = ALL_LBLS
+    VALID_LBLS = [ESIGNAL_SYMBOL, CONVICTION, REPORT_DATE]
+    FLD_IDS = dict(zip(ALL_LBLS, [x + '2' for x in string.uppercase[1: 1 + len(ALL_LBLS)]]))
 
     def __init__(self):
         pass
@@ -102,14 +115,14 @@ def float_to_time(value):
 def get_reporting():
     while True:
         try:
-            end = FieldLabels.FIELD_IDS[FieldLabels.ALL_LABELS[-1]]
+            end = rep_lbls.FLD_IDS[rep_lbls.ALL_LBLS[-1]]
             df = reporting_sht.range('B2:%s53' % end[:-1]).options(pd.DataFrame).value.drop("").drop(None)
             break
         except Exception as e:
             exception_msg(e, 'reporting')
 
-    if df[FieldLabels.REPORT_DATE].dtype == '<M8[ns]':
-        df[FieldLabels.REPORT_DATE] = df[FieldLabels.REPORT_DATE].apply(lambda x: x.date())
+    if df[rep_lbls.REPORT_DATE].dtype == '<M8[ns]':
+        df[rep_lbls.REPORT_DATE] = df[rep_lbls.REPORT_DATE].apply(lambda x: x.date())
     return df.fillna("")
 
 
@@ -142,18 +155,20 @@ def get_reporting_prev_close():
 
 
 def set_reporting_prev_close():
-    reporting, existing, monitoring = get_reporting(), get_net_positions(), get_monitoring()
+    reporting, existing, monitoring = get_reporting(), get_net_existing(), get_monitoring()
     reporting['Group'] = 'Reporting'
     existing['Group'] = 'Existing'
     monitoring['Group'] = 'Monitoring'
     lbls = ['Group', 'Reporting Date']
     all_groups = pd.concat([reporting[lbls], existing[lbls], monitoring[lbls]])
-    empty_mask = ((all_groups[FieldLabels.REPORT_DATE].isnull()) |
-                  (all_groups[FieldLabels.REPORT_DATE] == pd.NaT) |
-                  all_groups[FieldLabels.REPORT_DATE].str.contains(''))
+    all_groups = all_groups[~all_groups.index.duplicated()]
+    empty_mask = ((all_groups[rep_lbls.REPORT_DATE].isnull()) |
+                  (all_groups[rep_lbls.REPORT_DATE] == pd.NaT) |
+                  all_groups[rep_lbls.REPORT_DATE].str.contains(''))
     # all_groups = all_groups[~empty_mask]
-    all_groups.loc[empty_mask, FieldLabels.REPORT_DATE] = datetime.now().date()
-    all_groups['Prev Close Date'] = all_groups[FieldLabels.REPORT_DATE] - timedelta(days=1)
+    all_groups.loc[empty_mask, rep_lbls.REPORT_DATE] = datetime.now().date()
+    # Use the last weekday as prev close
+    all_groups['Prev Close Date'] = all_groups[rep_lbls.REPORT_DATE] - BDay(1)
     if None in all_groups.index:
         all_groups.drop(None, inplace=True)
 
@@ -178,33 +193,58 @@ def set_reporting(df, fields=['all']):
                 reporting_sht.range('B2').value = df
             else:
                 for field in fields:
-                    if field in FieldLabels.FIELD_IDS.keys():
-                        reporting_sht.range(FieldLabels.FIELD_IDS[field]).options(index=False).value = df[field]
+                    if field in rep_lbls.FLD_IDS.keys():
+                        reporting_sht.range(rep_lbls.FLD_IDS[field]).options(index=False).value = df[field]
             break
         except Exception as e:
                 exception_msg(e, 'reporting')
 
 
-def get_net_positions():
+def get_net_existing(exclude_squared=True):
     while True:
         try:
-            df = existing_sht.range('B2:G2').options(pd.DataFrame, expand='vertical').value.dropna()
+            df = existing_sht.range('A2:J2').options(pd.DataFrame, expand='vertical').value
             break
         except Exception as e:
                 exception_msg(e, 'existing-net')
 
-    # Drop net positions that are square
-    df = df[df['KUSD'] != 0]
+    # Drop net positions that are square or drop empty rows and then fill na with ''
+    if exclude_squared:
+        df = df[df[net_lbls.TRADE_AMT] != 0]
+    if '' in df.index:
+        df.drop('', inplace=True)
+    df = df.fillna('')
 
-    # Switch Saxo tickers out for eSignal tickers
-    df.index = [SYMBOLS.loc[(SYMBOLS['Saxo Tickers'] == k), 'eSignal Tickers'] for k in df.index]
-    return df.fillna("")
+    # Get esignal symbols and set as index
+    df[net_lbls.ESIGNAL_SYMBOL] = df[net_lbls.SAXO_SYMBOL].apply(lambda x:  SYMBOLS.loc[(SYMBOLS['Saxo Tickers'] == x), 'eSignal Tickers'].squeeze())
+    df = df.set_index(net_lbls.ESIGNAL_SYMBOL)
+    return df
 
 
-def get_all_positions():
+def set_net_existing(df, fields=['all']):
+    assert isinstance(fields, (list, tuple)), "'fields' parameter must by a list of field names"
     while True:
         try:
-            df = existing_sht.range('J2:Q2').options(pd.DataFrame, expand='vertical').value.dropna()
+            if 'all' in fields:
+                df[net_lbls.ESIGNAL_SYMBOL] = df.index
+                # existing_sht.range(net_lbls.FLD_IDS[net_lbls.ESIGNAL_SYMBOL]).options(index=False).value = pd.DataFrame(df.index, columns=[net_lbls.ESIGNAL_SYMBOL])
+                for field in net_lbls.VALID_LBLS:
+                    existing_sht.range(net_lbls.FLD_IDS[field]).options(index=False).value = df[field]
+            else:
+                for field in fields:
+                    if field in net_lbls.VALID_LBLS and field in net_lbls.FLD_IDS.keys():
+                        existing_sht.range(net_lbls.FLD_IDS[field]).options(index=False).value = df[field]
+                    else:
+                        print('[WARNING] field=%s is not in net_lbls.' % field)
+            break
+        except Exception as e:
+                exception_msg(e, 'reporting')
+
+
+def get_all_existing():
+    while True:
+        try:
+            df = existing_sht.range('Q2:X2').options(pd.DataFrame, expand='vertical').value
             break
         except Exception as e:
                 exception_msg(e, 'existing-all')
@@ -242,14 +282,16 @@ def get_latest():
         latest_monitoring.sort_index(inplace=True)
 
     latest = pd.concat([latest_reporting, latest_existing, latest_monitoring])
-    latest.drop("", inplace=True)
+    if '' in latest.index:
+        latest.drop("", inplace=True)
 
     # Check if data pulled has empty values
     if (latest['Last'] == "").sum() > 0 or (latest['Volume'] == "").sum() > 0 or (latest['Last Time'] == "").sum() > 0:
         # Notify of data issue
         print("[ERROR] Latest data pull came back with empty values. " +
               "Ensure Qlink is running and the data sheet is updating all cells.")
-        sys.exit()
+        sleep(2)
+        # sys.exit()
 
     latest['Last Time'] = latest['Last Time'].apply(lambda x: xl_ts_2_datetime(x))
     return latest.fillna("")
@@ -330,7 +372,7 @@ def L2_auto_trade(company, side, price, trade_amt, order_type, good_til, expiry=
             # Remove order info from reporting tab
             reporting = get_reporting()
             esig_symbol = SYMBOLS.loc[company, "eSignal Tickers"]
-            reporting.loc[esig_symbol, FieldLabels.BUY_SELL] = "sent"
+            reporting.loc[esig_symbol, rep_lbls.BUY_SELL] = "sent"
             set_reporting(reporting)
             return
         except Exception as e:
@@ -442,7 +484,7 @@ def saxo_create_order(company, asset_type, trade_amt, side, duration="DayOrder",
             # Remove order info from reporting tab
             reporting = get_reporting()
             esig_symbol = SYMBOLS.loc[company, "eSignal Tickers"]
-            reporting.loc[esig_symbol, FieldLabels.BUY_SELL] = "sent"
+            reporting.loc[esig_symbol, rep_lbls.BUY_SELL] = "sent"
             set_reporting(reporting)
             return
         except Exception as e:
@@ -458,20 +500,20 @@ def check_for_orders():
     for k, v in get_reporting().iterrows():
 
         # If values have been entered for, Buy/Sell, % Limit, Trade Amount, and one of the exit columns (target%, stop, EOD) then create an order
-        if (v[FieldLabels.LIMIT_PCT] != "" and v[FieldLabels.TRADE_AMT] != "" and
-                (v[FieldLabels.BUY_SELL] == 1 or v[FieldLabels.BUY_SELL] == 2) and
-                (v[FieldLabels.TARGET_PCT] != "" or v[FieldLabels.STOP_LOSS] != "" or v[FieldLabels.EOD_EXIT] != "")):
+        if (v[rep_lbls.LIMIT_PCT] != "" and v[rep_lbls.TRADE_AMT] != "" and
+                (v[rep_lbls.BUY_SELL] == 1 or v[rep_lbls.BUY_SELL] == 2) and
+                (v[rep_lbls.TARGET_PCT] != "" or v[rep_lbls.STOP_LOSS] != "" or v[rep_lbls.EOD_EXIT] != "")):
 
             company = SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0]
-            side = v[FieldLabels.BUY_SELL]
+            side = v[rep_lbls.BUY_SELL]
 
             # Calculate the limit price based off of the close previous to reporting day
-            limit_price = (1 + v[FieldLabels.LIMIT_PCT]) * prev_close.loc[k, 'Last']
+            limit_price = (1 + v[rep_lbls.LIMIT_PCT]) * prev_close.loc[k, 'Last']
 
             # Calculate the stop loss
-            stop_str = v[FieldLabels.STOP_LOSS]
+            stop_str = v[rep_lbls.STOP_LOSS]
             if stop_str != '' and stop_str != 0 and not None:
-                multiplier = 1.0 if v[FieldLabels.BUY_SELL] == 2 else -1.0
+                multiplier = 1.0 if v[rep_lbls.BUY_SELL] == 2 else -1.0
                 try:
                     stop_loss = limit_price * (1 + multiplier * abs(float(stop_str)))
                 except:
@@ -481,12 +523,12 @@ def check_for_orders():
                 stop_loss = None
 
             # Define the target % future orders
-            target_str = v[FieldLabels.TARGET_PCT]
+            target_str = v[rep_lbls.TARGET_PCT]
             if target_str != '' and target_str != 0 and not None:
-                tranche_cnt = (v[FieldLabels.TRADE_AMT] / TRANCHE_SZ[k])
+                tranche_cnt = (v[rep_lbls.TRADE_AMT] / TRANCHE_SZ.loc[k])
                 start_range = -tranche_cnt + int(.5 * tranche_cnt + .5)
                 end_range = tranche_cnt - int(.5 * tranche_cnt)
-                multiplier = 1.0 if v[FieldLabels.BUY_SELL] == 1 else -1.0
+                multiplier = 1.0 if v[rep_lbls.BUY_SELL] == 1 else -1.0
                 # Get target_side
                 if side == 1 or side == '1':
                     target_side = 2
@@ -506,16 +548,16 @@ def check_for_orders():
                     for i in range(start_range, end_range):
                         future_orders.append({
                             'company': company,
-                            'trade_amt': TRANCHE_SZ[k],
+                            'trade_amt': TRANCHE_SZ.loc[k],
                             'side': target_side,
                             'price': (1 + i * Config.TRANCHE_GAP) * target_price,
-                            'valid_from': v[FieldLabels.REPORT_DATE],
+                            'valid_from': v[rep_lbls.REPORT_DATE],
                             'order_type': 'target-limit'})
 
             # Send order (company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded")
             saxo_create_order(company=company,
                               asset_type='CfdOnStock',
-                              trade_amt=v[FieldLabels.TRADE_AMT],
+                              trade_amt=v[rep_lbls.TRADE_AMT],
                               side=side,
                               duration='DayOrder',
                               order_type='Limit',
@@ -523,7 +565,7 @@ def check_for_orders():
                               stop=stop_loss,
                               )
 
-            return future_orders
+    return future_orders
 
 
 if __name__ == '__main__':

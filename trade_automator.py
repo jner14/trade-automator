@@ -1,14 +1,22 @@
 import pandas as pd
+pd.set_option('expand_frame_repr', False)
 # from py_qlink import QLinkConn
 from time import sleep
 from datetime import datetime, time, timedelta
-from xlintegrator import get_reporting, get_latest, FieldLabels as labels, Config, set_reporting, L2_get_status, \
-    set_reporting_prev_close, get_net_positions, get_monitoring, L2_auto_trade, get_reporting_day, get_reporting_prev_close, \
-    get_prev_close, CONV_RATE, EXCH_CODE, SYMBOLS, saxo_create_order, check_for_orders, TRANCHE_SZ
+from xlintegrator import get_reporting, get_latest, rep_lbls, net_lbls, Config, set_reporting, L2_get_status, \
+    set_reporting_prev_close, get_net_existing, get_monitoring, L2_auto_trade, get_reporting_day, get_reporting_prev_close, \
+    get_prev_close, CONV_RATE, EXCH_CODE, SYMBOLS, saxo_create_order, check_for_orders, TRANCHE_SZ, set_net_existing
 from algos import consolidation_breakout
 from trade_utils import change_time
 import re
+import math
+import sys
+from PyQt5.QtWidgets import QApplication
+from order_window import OrderWindow
 
+# app = QApplication(sys.argv)
+# ex = OrderWindow(SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == 'RTN-LON')].index[0], 1)
+# # sys.exit(app.exec_())
 
 BAR_LABELS = ['Open', 'High', 'Low', 'Close', 'Volume']
 POLL_LABELS = ['Last', 'Volume']
@@ -22,42 +30,60 @@ first_run = True
 bars = {}
 future_orders = []
 while True:
-
-    # Update config options
-    Config.get_config_options()
-
-    # If its the first run then generate stop orders for current positions
-    if first_run:
-        # Get current positions
-        existing = get_net_positions()
-
-        # Create future stop loss orders
-        prev_close = get_prev_close()
-
-        for k, v in existing.iterrows():
-            tranche_cnt = (v['Amount'] / TRANCHE_SZ[k])
-            start_range = -tranche_cnt + int(.5 * tranche_cnt + .5)
-            end_range = tranche_cnt - int(.5 * tranche_cnt)
-            # Create tranche orders
-            for i in range(start_range, end_range):
-                company = SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0]
-                side = 1 if v['Amount'] < 0 else 2
-                multiplier = 1.0 if side == 1 else -1.0
-                stop_price = (1. + .01 * multiplier) * prev_close.loc[k, 'Last']
-                future_orders.append({
-                    'company': company,
-                    'trade_amt': TRANCHE_SZ[k],
-                    'side': side,
-                    'price': (1 + i * Config.TRANCHE_GAP) * stop_price,
-                    'valid_from': v[datetime.now().date()],
-                    'order_type': 'trailing-stop-market'
-                })
-
-    ### Wait until market opens
+    # Get the time and print it to console
     time_now = datetime.now().time()
     first_second = time_now.second
     print("The time is %s" % time_now.strftime(TIME_FORMAT))
 
+    # Update config options
+    Config.get_config_options()
+
+    # Run this only if the program was just started
+    if first_run:
+        # Get current positions
+        existing = get_net_existing()
+
+        # Get previous close for all companies
+        prev_close = get_prev_close()
+
+        # Get the latest
+
+        # If its the first run then generate stop orders for current positions
+        # TODO: test creating trailing-stop future orders for straight-forward trades
+        # TODO: move tranche calculations to the saxo order function, even the number of stop orders to place needs to be calculated at the time the tranche order is executed making all this below, useless
+        # for k, v in existing.iterrows():
+        #     tranche_cnt = int(math.ceil(v[net_lbls.AMOUNT] * latest.loc[k, 'Last'] / TRANCHE_SZ.loc[k]))
+        #     start_range = -tranche_cnt + int(.5 * tranche_cnt + .5)
+        #     end_range = tranche_cnt - int(.5 * tranche_cnt)
+        #     # Create tranche orders
+        #     for i in range(start_range, end_range):
+        #         company = SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0]
+        #         side = 1 if v[net_lbls.AMOUNT] < 0 else 2
+        #         stop_diff = .04 if v[net_lbls.CONVICTION].lower() == 's' else .01
+        #         stop_price = (1. + .01 * multiplier) * prev_close.loc[k, 'Last']
+        #         future_orders.append({
+        #             'company': company,
+        #             'trade_amt': TRANCHE_SZ.loc[k].squeeze(),
+        #             'side': side,
+        #             'price': (1 + i * Config.TRANCHE_GAP) * stop_price,
+        #             'valid_from': datetime.now().date(),
+        #             'order_type': 'trailing-stop-market'
+        #         })
+
+        # TODO: Remove yesterday's reporting today companies, moving to monitoring if none were traded
+        if (Config.MARKET_OPEN < time_now < Config.MARKET_CLOSE) or IGNORE_MKT_HRS:
+            pass
+
+        # Set reporting date to today's date if it is currently None or NaT, i.e. empty
+        reporting_table = get_reporting()
+        if Config.AUTO_REPORT_DATE:
+            report_day = datetime.now().date()
+            reporting_table[rep_lbls.REPORT_DATE] = \
+                reporting_table[rep_lbls.REPORT_DATE].apply(
+                    lambda x: report_day if x is None or x is pd.NaT or x == '' else x)
+            set_reporting(reporting_table, [rep_lbls.REPORT_DATE])
+
+    # Run this only during the minute before market open
     # TODO: fix this for times when program is started after market hours have begun
     if time_now < change_time(Config.MARKET_OPEN, -1) or time_now > Config.MARKET_CLOSE:
         print("Market hours are configured as {} - {}".format(Config.MARKET_OPEN.strftime(TIME_FORMAT),
@@ -104,18 +130,9 @@ while True:
         time_now = datetime.now().time()
     print('')
 
-    ### Collect some data from excel and update empty reporting day fields
-    # Get tables
-    reporting_table = get_reporting()
+    # Collect some data from excel and update empty reporting day fields
     # existing_table = get_net_positions()
     monitoring_table = get_monitoring()
-
-    # Set reporting date to today's date if it is currently None or NaT, i.e. empty
-    if Config.AUTO_REPORT_DATE:
-        report_day = datetime.now().date()
-        reporting_table[labels.REPORT_DATE] = \
-            reporting_table[labels.REPORT_DATE].apply(lambda x: report_day if x is None or x is pd.NaT else x)
-        set_reporting(reporting_table, [labels.REPORT_DATE])
 
     # Run only once
     # if first_run:
@@ -189,10 +206,11 @@ while True:
         #     if len(v) >= 5:
         #         breakouts[k] = consolidation_breakout(v)
 
+        # Get the reporting and existing sheets
         reporting_table = get_reporting()
 
-        # Check for price target met
-        # pt_matches = reporting_table[labels.ENTRY_REQ].str.extract(r'price\(([\d.]+)\)', expand=True).dropna()
+                    # Check for price target met
+        # pt_matches = reporting_table[rep_lbls.ENTRY_REQ].str.extract(r'price\(([\d.]+)\)', expand=True).dropna()
         # for k, v in pt_matches.iteritems():
         #     print(k, v)
 
@@ -201,37 +219,61 @@ while True:
             if k not in reporting_table.index: continue
             try:
                 if .99 * prev_close.loc[k, 'Last'] > v.ix[-1, 'Close'] or v.ix[-1, 'Close'] > 1.01 * prev_close.loc[k, 'Last']:
-                    if "1%Change" not in reporting_table.loc[k, labels.TRIGGERS]:
-                        if reporting_table.loc[k, labels.TRIGGERS] != "":
-                            reporting_table.loc[k, labels.TRIGGERS] += ",1%Change"
+                    if "1%Change" not in reporting_table.loc[k, rep_lbls.TRIGGERS]:
+                        if reporting_table.loc[k, rep_lbls.TRIGGERS] != "":
+                            reporting_table.loc[k, rep_lbls.TRIGGERS] += ",1%Change"
                         else:
-                            reporting_table.loc[k, labels.TRIGGERS] = "1%Change"
+                            reporting_table.loc[k, rep_lbls.TRIGGERS] = "1%Change"
 
                 if .98 * prev_close.loc[k, 'Last'] > v.ix[-1, 'Close'] or v.ix[-1, 'Close']  > 1.02 * prev_close.loc[k, 'Last']:
-                    if "2%Change" not in reporting_table.loc[k, labels.TRIGGERS]:
-                        if reporting_table.loc[k, labels.TRIGGERS] != "":
-                            reporting_table.loc[k, labels.TRIGGERS] += ",2%Change"
+                    if "2%Change" not in reporting_table.loc[k, rep_lbls.TRIGGERS]:
+                        if reporting_table.loc[k, rep_lbls.TRIGGERS] != "":
+                            reporting_table.loc[k, rep_lbls.TRIGGERS] += ",2%Change"
                         else:
-                            reporting_table.loc[k, labels.TRIGGERS] = "2%Change"
+                            reporting_table.loc[k, rep_lbls.TRIGGERS] = "2%Change"
             except Exception as e:
                 print(e)
 
         # for k, v in reporting_table.iterrows():
-        #     price_req = re.(v[labels.ENTRY_REQ])
-        #     if "price(" in v[labels.ENTRY_REQ].lower():
+        #     price_req = re.(v[rep_lbls.ENTRY_REQ])
+        #     if "price(" in v[rep_lbls.ENTRY_REQ].lower():
 
 
         # # For any new consolidation breakouts update Reporting sheet
         # for k, v in reporting_table.iterrows():
         #     if len(breakouts[k]) > 0 and breakouts[k].iloc[-1] == True:
-        #         if reporting_table.loc[k, labels.TRIGGERS] != "":
-        #             reporting_table.loc[k, labels.TRIGGERS] += ",ConBreak"
+        #         if reporting_table.loc[k, rep_lbls.TRIGGERS] != "":
+        #             reporting_table.loc[k, rep_lbls.TRIGGERS] += ",ConBreak"
         #         else:
-        #             reporting_table.loc[k, labels.TRIGGERS] = "ConBreak"
+        #             reporting_table.loc[k, rep_lbls.TRIGGERS] = "ConBreak"
         set_reporting(reporting_table)
 
         # TODO: remove this check_for_orders call after testing
         future_orders += check_for_orders()
+
+    # Get existing net positions
+    existing_table = get_net_existing(exclude_squared=False)
+
+    # Check for changes to existing positions and update fields of new positions
+    chg_existing = False
+    for k, v in existing_table.iterrows():
+        # Check conviction column
+        if v[net_lbls.CONVICTION] == '':
+            chg_existing = True
+            if k in reporting_table.index:
+                existing_table.loc[k, net_lbls.CONVICTION] = reporting_table.loc[k, rep_lbls.CONVICTION]
+            else:
+                existing_table.loc[k, net_lbls.CONVICTION] = 'MISSING'
+        # Check reporting date column
+        if v[net_lbls.REPORT_DATE] == '':
+            chg_existing = True
+            if k in reporting_table.index:
+                existing_table.loc[k, net_lbls.REPORT_DATE] = reporting_table.loc[k, rep_lbls.REPORT_DATE]
+            else:
+                existing_table.loc[k, net_lbls.REPORT_DATE] = 'MISSING'
+    # Update existing sheet with changes if any
+    if chg_existing:
+        set_net_existing(existing_table)
 
     ### For any orders that have a stretch limit check for unfilled orders
     # TODO: add stretch limit orders feature
@@ -240,6 +282,7 @@ while True:
     # TODO: add end of day exit feature
 
     # Update trailing-stop order prices
+    # TODO: test update trailing-stop future orders
     for order in future_orders:
         comp = order['company']
         if order['order_type'] in ['trailing-stop-market', 'trailing-stop-limit']:
@@ -255,8 +298,9 @@ while True:
     # TODO: test future orders
     for order in future_orders[::-1]:
         comp = order['company']
-        if (((poll_data[comp].iloc[-1]['Last'] <= order['price'] and order['side'] == 1) or
-                (poll_data[comp].iloc[-1]['Last'] >= order['price'] and order['side'] == 2))
+        symbol = SYMBOLS.loc[comp, 'eSignal Tickers']
+        if (((poll_data[symbol].iloc[-1]['Last'] <= order['price'] and order['side'] == 1) or
+                (poll_data[symbol].iloc[-1]['Last'] >= order['price'] and order['side'] == 2))
                 and datetime.now().date() >= order['valid_from']):
             if 'limit' in order['order_type']:
                 order_type = 'Limit'

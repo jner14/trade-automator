@@ -5,6 +5,8 @@ try:
     from .. import xlintegrator as xlint
 except:
     import xlintegrator as xlint
+import pandas as pd
+pd.set_option('expand_frame_repr', False)
 
 
 class TestXLIntegrator(TestCase):
@@ -15,7 +17,13 @@ class TestXLIntegrator(TestCase):
         super(TestXLIntegrator, cls).setUpClass()
 
     def test_field_labels(self):
-        reporting = xlint.get_reporting()[xlint.FieldLabels.ALL_LABELS]
+        reporting = xlint.get_reporting()[xlint.rep_lbls.ALL_LBLS]
+        print(xlint.rep_lbls.ALL_LBLS)
+        print(xlint.rep_lbls.FLD_IDS)
+        existing = xlint.get_net_existing()[xlint.net_lbls.ALL_LBLS[1:]]
+        print(xlint.net_lbls.ALL_LBLS)
+        print(xlint.net_lbls.VALID_LBLS)
+        print(xlint.net_lbls.FLD_IDS)
 
     def test_get_reporting(self):
         reporting = xlint.get_reporting()
@@ -23,7 +31,7 @@ class TestXLIntegrator(TestCase):
         self.assertIsNot(len(reporting), 0)
 
     def test_get_net_positions(self):
-        existing = xlint.get_net_positions()
+        existing = xlint.get_net_existing()
         print('Existing Net Positions\n%s' % existing)
 
     def test_get_config_options(self):
