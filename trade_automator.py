@@ -5,7 +5,8 @@ from time import sleep
 from datetime import datetime, time, timedelta
 from xlintegrator import get_reporting, get_latest, rep_lbls, net_lbls, Config, set_reporting, L2_get_status, \
     set_reporting_prev_close, get_net_existing, get_monitoring, L2_auto_trade, get_reporting_day, get_reporting_prev_close, \
-    get_prev_close, CONV_RATE, EXCH_CODE, SYMBOLS, saxo_create_order, check_for_orders, TRANCHE_SZ, set_net_existing
+    get_prev_close, CONV_RATE, EXCH_CODE, SYMBOLS, TRANCHE_SZ, set_net_existing, \
+    CURRENCIES
 from algos import consolidation_breakout
 from trade_utils import change_time
 import re
@@ -13,10 +14,8 @@ import math
 import sys
 from PyQt5.QtWidgets import QApplication
 from order_window import OrderWindow
+from orders import *
 
-# app = QApplication(sys.argv)
-# ex = OrderWindow(SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == 'RTN-LON')].index[0], 1)
-# # sys.exit(app.exec_())
 
 BAR_LABELS = ['Open', 'High', 'Low', 'Close', 'Volume']
 POLL_LABELS = ['Last', 'Volume']
@@ -28,7 +27,7 @@ period = 1
 poll_data = {}
 first_run = True
 bars = {}
-future_orders = []
+order_manager = OrderManager()
 while True:
     # Get the time and print it to console
     time_now = datetime.now().time()
@@ -40,6 +39,10 @@ while True:
 
     # Run this only if the program was just started
     if first_run:
+
+        # Configure Tranche Orders with symbol currencies
+        TrancheOrder.CURRENCIES = CURRENCIES
+
         # Get current positions
         existing = get_net_existing()
 
@@ -113,7 +116,7 @@ while True:
             print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
             print("Executing orders...")
             # If certain conditions are met then make an order
-            check_for_orders()
+            order_manager.check_for_opening_orders()
 
             orders_sent = True
             print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
@@ -248,12 +251,13 @@ while True:
         #             reporting_table.loc[k, rep_lbls.TRIGGERS] = "ConBreak"
         set_reporting(reporting_table)
 
-        # TODO: remove this check_for_orders call after testing
-        future_orders += check_for_orders()
+        # TODO: remove this check_for_opening_orders call after testing
+        order_manager.check_for_opening_orders()
 
     # Get existing net positions
     existing_table = get_net_existing(exclude_squared=False)
 
+    # TODO: clear fields from previous day square positions
     # Check for changes to existing positions and update fields of new positions
     chg_existing = False
     for k, v in existing_table.iterrows():
@@ -282,43 +286,10 @@ while True:
     # TODO: add end of day exit feature
 
     # Update trailing-stop order prices
-    # TODO: test update trailing-stop future orders
-    for order in future_orders:
-        comp = order['company']
-        if order['order_type'] in ['trailing-stop-market', 'trailing-stop-limit']:
-            last = latest.loc[SYMBOLS.loc[comp, 'eSignal Tickers'], 'Last']
-            # If the price is greater than 1% different from stop price, update price
-            if abs(1 - last / order['price']) > 0.01:
-                if order['side'] == 1:
-                    order['price'] = round(1.01 * last, 2)
-                else:
-                    order['price'] = round(0.99 * last, 2)
+    order_manager.update_trailing(latest)
 
     # Check for future orders that have met their price and time requirements and send them
-    # TODO: test future orders
-    for order in future_orders[::-1]:
-        comp = order['company']
-        symbol = SYMBOLS.loc[comp, 'eSignal Tickers']
-        if (((poll_data[symbol].iloc[-1]['Last'] <= order['price'] and order['side'] == 1) or
-                (poll_data[symbol].iloc[-1]['Last'] >= order['price'] and order['side'] == 2))
-                and datetime.now().date() >= order['valid_from']):
-            if 'limit' in order['order_type']:
-                order_type = 'Limit'
-            elif 'limit' in order['order_type']:
-                order_type = 'Market'
-            else:
-                print('[WARNING] future order not placed! order_type=%s is not valid. Must contain limit or market.' % order['order_type'])
-                continue
-            saxo_create_order(company=comp,
-                              asset_type='CfdOnStock',
-                              trade_amt=order['trade_amt'],
-                              side=order['side'],
-                              duration='DayOrder',
-                              order_type=order_type,
-                              price=order['price']
-                              )
-            # Remove sent orders
-            future_orders.remove(order)
+    order_manager.execute_ready_orders(poll_data)
 
 
 print("Finished")

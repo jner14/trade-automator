@@ -37,6 +37,7 @@ tranche_sht = wb.sheets('Tranche Size')
 CONV_RATE = forex_sht.range('B2').options(pd.DataFrame, expand='table').value
 EXCH_CODE = forex_sht.range('F2').options(pd.DataFrame, expand='table').value
 SYMBOLS = pd.read_excel('Shared Files\\MasterFileAT.xls', 'Link to Excel', index_col=0).dropna()
+CURRENCIES = {comp: EXCH_CODE.loc[SYMBOLS.loc[comp, 'IG Tickers'].split('.')[-1], 'Currency'] for comp in SYMBOLS.index}
 # TODO: add tranche size sheet and load it in the line below
 TRANCHE_SZ = tranche_sht.range('B2').options(pd.DataFrame, expand='table').value.dropna()
 
@@ -74,6 +75,7 @@ class Config:
     SAXO_ACCT_KEY = None
     SAXO_ENABLED = None
     TRANCHE_GAP = None
+    TRANCHE_SIZE = {}
 
     def __init__(self):
         pass
@@ -93,6 +95,12 @@ class Config:
                 Config.SAXO_ACCT_KEY = config_sht.range('B11').value
                 Config.SAXO_ENABLED = config_sht.range('B12').value
                 Config.TRANCHE_GAP = config_sht.range('B13').value
+                Config.TRANCHE_SIZE['GBP'] = config_sht.range('B14').value
+                Config.TRANCHE_SIZE['SEK'] = config_sht.range('B15').value
+                Config.TRANCHE_SIZE['NOK'] = config_sht.range('B16').value
+                Config.TRANCHE_SIZE['SWX'] = config_sht.range('B17').value
+                Config.TRANCHE_SIZE['DKK'] = config_sht.range('B18').value
+                Config.TRANCHE_SIZE['EUR'] = config_sht.range('B19').value
                 break
             except Exception as e:
                 exception_msg(e, 'config')
@@ -305,11 +313,45 @@ def get_reporting_day():
                 exception_msg(e, 'reporting')
 
 
+def send_order(company, message1, message2):
+
+    # Send order
+    while True:
+        try:
+            # Get the order count
+            curr_orders = get_current_orders()
+            new_loc = len(curr_orders) + 3
+            time_now = datetime.now().replace(microsecond=0)
+            # TODO: add take profit and any other missing fields below
+
+            # Update order sheet, sending the order to Saxo
+            orders_sht.range('T%s' % new_loc).value = [company, message2, message1[1:], time_now]
+            break
+        except Exception as e:
+            exception_msg(e, 'orders')
+
+    # Update dashboard
+    while True:
+        try:
+            # Remove order info from reporting tab
+            reporting = get_reporting()
+            esig_symbol = SYMBOLS.loc[company, "eSignal Tickers"]
+            reporting.loc[esig_symbol, rep_lbls.BUY_SELL] = "sent"
+            set_reporting(reporting)
+            break
+        except Exception as e:
+            exception_msg(e, 'reporting')
+
+
 def xl_ts_2_datetime(xldate):
     assert type(xldate) == float, '[ERROR][xl_ts_2_datetime] xldate=%s is not a valid float value' % xldate
     temp = datetime(1899, 12, 30)
     delta = timedelta(days=xldate)
     return temp + delta
+
+
+def get_current_orders():
+    return orders_sht.range('T2').options(pd.DataFrame, expand='vertical').value
 
 
 def L2_auto_trade(company, side, price, trade_amt, order_type, good_til, expiry="", stop=""):
@@ -414,158 +456,158 @@ def L2_get_status():
             exception_msg(e, 'orders')
 
 
-def saxo_create_order(company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded"):
+# def saxo_create_order(company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded"):
+#
+#     # Grab currency using the ig symbol
+#     ig_symbol = SYMBOLS.loc[company, 'IG Tickers']
+#     currency = EXCH_CODE.loc[ig_symbol.split('.')[-1], 'Currency']
+#
+#     if currency == 'USD':
+#         conv_rate = 1
+#     else:
+#         conv_rate = CONV_RATE.loc[currency, 'Conversion Rate']
+#
+#     # Calculate number of shares using the trade amount, conversion rate, and limit price
+#     if price != 0.0:
+#         trade_size = int((trade_amt * 1000.0 * conv_rate) / price)
+#     else:
+#         print(['[DEBUG] SAXO_CREATE_ORDER - must pass the limit or last price'])
+#         sys.exit()
+#
+#     # Get side string
+#     if side == 1 or side == '1':
+#         side_str = 'Buy'
+#     elif side == 2 or side == '2':
+#         side_str = 'Sell'
+#     else:
+#         print('[WARNING] Value passed for order side is not valid, ORDER NOT SENT!')
+#         return
+#
+#     # Create Saxo order function text
+#     message = '=OpenApiPlaceOrder("{}","{}","{}",{},"{}","{}","{}",{}'.format(Config.SAXO_ACCT_KEY,
+#                                                                               SYMBOLS.loc[company, 'Saxo Tickers'],
+#                                                                               asset_type,
+#                                                                               trade_size,
+#                                                                               side_str,
+#                                                                               duration,
+#                                                                               order_type,
+#                                                                               round(price, 2))
+#     if take_profit is not None:
+#         message += ',%s' % round(take_profit, 2)
+#     if stop is not None:
+#         message += ',{},"{}"'.format(round(stop, 2), stop_type)
+#     message += ')'
+#
+#     # Alter the message to indicate it is simulated if so
+#     if not Config.SAXO_ENABLED:
+#         msg = "SIM#%s" % random.randint(100000, 999999)
+#     else:
+#         msg = message
+#
+#     # Update dashboard and send order
+#     while True:
+#         try:
+#             # Get the order count
+#             curr_orders = orders_sht.range('T2').options(pd.DataFrame, expand='vertical').value
+#             new_loc = len(curr_orders) + 3
+#             time_now = datetime.now().replace(microsecond=0)
+#             # TODO: add take profit and any other missing fields below
+#
+#             # Update order sheet, sending order too
+#             orders_sht.range('T%s' % new_loc).value = [company,
+#                                                           msg,
+#                                                           message[1:],
+#                                                           time_now]
+#             if not Config.SAXO_ENABLED:
+#                 print("The following SIMULATED order has been sent: %s" % message)
+#             else:
+#                 print("The following order has been sent: %s" % message)
+#
+#             # Remove order info from reporting tab
+#             reporting = get_reporting()
+#             esig_symbol = SYMBOLS.loc[company, "eSignal Tickers"]
+#             reporting.loc[esig_symbol, rep_lbls.BUY_SELL] = "sent"
+#             set_reporting(reporting)
+#             return
+#         except Exception as e:
+#             exception_msg(e, 'orders')
 
-    # Grab currency using the ig symbol
-    ig_symbol = SYMBOLS.loc[company, 'IG Tickers']
-    currency = EXCH_CODE.loc[ig_symbol.split('.')[-1], 'Currency']
 
-    if currency == 'USD':
-        conv_rate = 1
-    else:
-        conv_rate = CONV_RATE.loc[currency, 'Conversion Rate']
-
-    # Calculate number of shares using the trade amount, conversion rate, and limit price
-    if price != 0.0:
-        trade_size = int((trade_amt * 1000.0 * conv_rate) / price)
-    else:
-        print(['[DEBUG] SAXO_CREATE_ORDER - must pass the limit or last price'])
-        sys.exit()
-
-    # Get side string
-    if side == 1 or side == '1':
-        side_str = 'Buy'
-    elif side == 2 or side == '2':
-        side_str = 'Sell'
-    else:
-        print('[WARNING] Value passed for order side is not valid, ORDER NOT SENT!')
-        return
-
-    # Create Saxo order function text
-    message = '=OpenApiPlaceOrder("{}","{}","{}",{},"{}","{}","{}",{}'.format(Config.SAXO_ACCT_KEY,
-                                                                              SYMBOLS.loc[company, 'Saxo Tickers'],
-                                                                              asset_type,
-                                                                              trade_size,
-                                                                              side_str,
-                                                                              duration,
-                                                                              order_type,
-                                                                              round(price, 2))
-    if take_profit is not None:
-        message += ',%s' % round(take_profit, 2)
-    if stop is not None:
-        message += ',{},"{}"'.format(round(stop, 2), stop_type)
-    message += ')'
-
-    # Alter the message to indicate it is simulated if so
-    if not Config.SAXO_ENABLED:
-        msg = "SIM#%s" % random.randint(100000, 999999)
-    else:
-        msg = message
-
-    # Update dashboard and send order
-    while True:
-        try:
-            # Get the order count
-            curr_orders = orders_sht.range('T2').options(pd.DataFrame, expand='vertical').value
-            new_loc = len(curr_orders) + 3
-            time_now = datetime.now().replace(microsecond=0)
-            # TODO: add take profit and any other missing fields below
-
-            # Update order sheet, sending order too
-            orders_sht.range('T%s' % new_loc).value = [company,
-                                                          msg,
-                                                          message[1:],
-                                                          time_now]
-            if not Config.SAXO_ENABLED:
-                print("The following SIMULATED order has been sent: %s" % message)
-            else:
-                print("The following order has been sent: %s" % message)
-
-            # Remove order info from reporting tab
-            reporting = get_reporting()
-            esig_symbol = SYMBOLS.loc[company, "eSignal Tickers"]
-            reporting.loc[esig_symbol, rep_lbls.BUY_SELL] = "sent"
-            set_reporting(reporting)
-            return
-        except Exception as e:
-            exception_msg(e, 'orders')
-
-
-def check_for_orders():
-    prev_close = get_prev_close()
-    future_orders = []
-
-    # TODO: switch prev_close_rep to prev_close
-    # If certain conditions are met then make an order
-    for k, v in get_reporting().iterrows():
-
-        # If values have been entered for, Buy/Sell, % Limit, Trade Amount, and one of the exit columns (target%, stop, EOD) then create an order
-        if (v[rep_lbls.LIMIT_PCT] != "" and v[rep_lbls.TRADE_AMT] != "" and
-                (v[rep_lbls.BUY_SELL] == 1 or v[rep_lbls.BUY_SELL] == 2) and
-                (v[rep_lbls.TARGET_PCT] != "" or v[rep_lbls.STOP_LOSS] != "" or v[rep_lbls.EOD_EXIT] != "")):
-
-            company = SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0]
-            side = v[rep_lbls.BUY_SELL]
-
-            # Calculate the limit price based off of the close previous to reporting day
-            limit_price = (1 + v[rep_lbls.LIMIT_PCT]) * prev_close.loc[k, 'Last']
-
-            # Calculate the stop loss
-            stop_str = v[rep_lbls.STOP_LOSS]
-            if stop_str != '' and stop_str != 0 and not None:
-                multiplier = 1.0 if v[rep_lbls.BUY_SELL] == 2 else -1.0
-                try:
-                    stop_loss = limit_price * (1 + multiplier * abs(float(stop_str)))
-                except:
-                    stop_loss = None
-                    print('[ERROR] "%s" is not a valid stop loss value' % stop_str)
-            else:
-                stop_loss = None
-
-            # Define the target % future orders
-            target_str = v[rep_lbls.TARGET_PCT]
-            if target_str != '' and target_str != 0 and not None:
-                tranche_cnt = (v[rep_lbls.TRADE_AMT] / TRANCHE_SZ.loc[k])
-                start_range = -tranche_cnt + int(.5 * tranche_cnt + .5)
-                end_range = tranche_cnt - int(.5 * tranche_cnt)
-                multiplier = 1.0 if v[rep_lbls.BUY_SELL] == 1 else -1.0
-                # Get target_side
-                if side == 1 or side == '1':
-                    target_side = 2
-                elif side == 2 or side == '2':
-                    target_side = 1
-                else:
-                    target_side = None
-                # Get target float value
-                try:
-                    target_flt = abs(float(target_str))
-                    target_price = (1. + target_flt * multiplier) * prev_close.loc[k, 'Last']
-                except:
-                    target_price = None
-                    print('[ERROR] "%s" is not a valid target percent value' % target_str)
-                # Create tranche orders to return as future orders
-                if target_price is not None:
-                    for i in range(start_range, end_range):
-                        future_orders.append({
-                            'company': company,
-                            'trade_amt': TRANCHE_SZ.loc[k],
-                            'side': target_side,
-                            'price': (1 + i * Config.TRANCHE_GAP) * target_price,
-                            'valid_from': v[rep_lbls.REPORT_DATE],
-                            'order_type': 'target-limit'})
-
-            # Send order (company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded")
-            saxo_create_order(company=company,
-                              asset_type='CfdOnStock',
-                              trade_amt=v[rep_lbls.TRADE_AMT],
-                              side=side,
-                              duration='DayOrder',
-                              order_type='Limit',
-                              price=limit_price,
-                              stop=stop_loss,
-                              )
-
-    return future_orders
+# def check_for_orders():
+#     prev_close = get_prev_close()
+#     future_orders = []
+#
+#     # TODO: switch prev_close_rep to prev_close
+#     # If certain conditions are met then make an order
+#     for k, v in get_reporting().iterrows():
+#
+#         # If values have been entered for, Buy/Sell, % Limit, Trade Amount, and one of the exit columns (target%, stop, EOD) then create an order
+#         if (v[rep_lbls.LIMIT_PCT] != "" and v[rep_lbls.TRADE_AMT] != "" and
+#                 (v[rep_lbls.BUY_SELL] == 1 or v[rep_lbls.BUY_SELL] == 2) and
+#                 (v[rep_lbls.TARGET_PCT] != "" or v[rep_lbls.STOP_LOSS] != "" or v[rep_lbls.EOD_EXIT] != "")):
+#
+#             company = SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0]
+#             side = v[rep_lbls.BUY_SELL]
+#
+#             # Calculate the limit price based off of the close previous to reporting day
+#             limit_price = (1 + v[rep_lbls.LIMIT_PCT]) * prev_close.loc[k, 'Last']
+#
+#             # Calculate the stop loss
+#             stop_str = v[rep_lbls.STOP_LOSS]
+#             if stop_str != '' and stop_str != 0 and not None:
+#                 multiplier = 1.0 if v[rep_lbls.BUY_SELL] == 2 else -1.0
+#                 try:
+#                     stop_loss = limit_price * (1 + multiplier * abs(float(stop_str)))
+#                 except:
+#                     stop_loss = None
+#                     print('[ERROR] "%s" is not a valid stop loss value' % stop_str)
+#             else:
+#                 stop_loss = None
+#
+#             # Define the target % future orders
+#             target_str = v[rep_lbls.TARGET_PCT]
+#             if target_str != '' and target_str != 0 and not None:
+#                 tranche_cnt = (v[rep_lbls.TRADE_AMT] / TRANCHE_SZ.loc[k])
+#                 start_range = -tranche_cnt + int(.5 * tranche_cnt + .5)
+#                 end_range = tranche_cnt - int(.5 * tranche_cnt)
+#                 multiplier = 1.0 if v[rep_lbls.BUY_SELL] == 1 else -1.0
+#                 # Get target_side
+#                 if side == 1 or side == '1':
+#                     target_side = 2
+#                 elif side == 2 or side == '2':
+#                     target_side = 1
+#                 else:
+#                     target_side = None
+#                 # Get target float value
+#                 try:
+#                     target_flt = abs(float(target_str))
+#                     target_price = (1. + target_flt * multiplier) * prev_close.loc[k, 'Last']
+#                 except:
+#                     target_price = None
+#                     print('[ERROR] "%s" is not a valid target percent value' % target_str)
+#                 # Create tranche orders to return as future orders
+#                 if target_price is not None:
+#                     for i in range(start_range, end_range):
+#                         future_orders.append({
+#                             'company': company,
+#                             'trade_amt': TRANCHE_SZ.loc[k],
+#                             'side': target_side,
+#                             'price': (1 + i * Config.TRANCHE_GAP) * target_price,
+#                             'valid_from': v[rep_lbls.REPORT_DATE],
+#                             'order_type': 'target-limit'})
+#
+#             # Send order (company, asset_type, trade_amt, side, duration="DayOrder", order_type="Market", price=0.0, take_profit=None, stop=None, stop_type="StopIfTraded")
+#             saxo_create_order(company=company,
+#                               asset_type='CfdOnStock',
+#                               trade_amt=v[rep_lbls.TRADE_AMT],
+#                               side=side,
+#                               duration='DayOrder',
+#                               order_type='Limit',
+#                               price=limit_price,
+#                               stop=stop_loss,
+#                               )
+#
+#     return future_orders
 
 
 if __name__ == '__main__':

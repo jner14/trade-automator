@@ -8,10 +8,10 @@ from xlintegrator import saxo_create_order
 
 WINDOW_GAP = 20
 
-
+# TODO: add time delay cancellation of manual order window of 15 minutes
 class OrderWindow(QWidget):
-    def __init__(self, comp, side, last_price, *args, **kwargs):
-        QWidget.__init__(self, *args, **kwargs)
+    def __init__(self, comp, side, last_price):
+        QWidget.__init__(self)
         self.title = 'Manual Order Execution'
         self.left = 10
         self.top = 10

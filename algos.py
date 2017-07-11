@@ -12,8 +12,8 @@ TIME = 'Intraday_Time'
 DATE = 'Intraday_Date'
 COLUMN_LABELS = [OPEN, HIGH, LOW, LAST, TIME, DATE]
 
-
-def highs_lows(bars, prev_close, ma_period=2, average_type=1, pct_change=0.2, full_df=False):
+# TODO: fix issue with CLLN-LON on 10/07 where false positive low and high
+def highs_lows(bars, prev_close, ma_period=2, average_type=1, pct_change=0.2, full_df=False, for_viewing=False):
     """
     Detects highs and lows.
     :param bars: Open, High, Low, Last, Volume, Intraday_Date, Intraday_Time
@@ -74,7 +74,10 @@ def highs_lows(bars, prev_close, ma_period=2, average_type=1, pct_change=0.2, fu
             real_high = bar_range.max()
             # Get the index of the most recent high
             high_i = bar_range.loc[bar_range == real_high].index[-1]
-            bars.loc[high_i, HIGHS] = '{}/{} {:02}:{:02}'.format(k.month, k.day, k.hour, k.minute)
+            if for_viewing:
+                bars.loc[k, HIGHS] = 'High of {} was found at {:02}:{:02}'.format(bars.loc[high_i, 'High'], high_i.hour, high_i.minute)
+            else:
+                bars.loc[high_i, HIGHS] = '{}/{} {:02}:{:02}'.format(k.month, k.day, k.hour, k.minute)
             # bars.ix[bars.index.get_loc(k)-1-flat_cnt, HIGHS] = 'Type=high, Found={}/{} {:02}:{:02}'.format(k.month, k.day, k.hour, k.minute)
             low = v
             bars.loc[k, MA_TREND] = 'down'
@@ -87,7 +90,10 @@ def highs_lows(bars, prev_close, ma_period=2, average_type=1, pct_change=0.2, fu
             bar_range = bars.ix[last_event_iloc + 1:bars.index.get_loc(k)+1, LOW]
             real_low = bar_range.min()
             low_i = bar_range.loc[bar_range == real_low].index[-1]
-            bars.loc[low_i, LOWS] = '{}/{} {:02}:{:02}'.format(k.month, k.day, k.hour, k.minute)
+            if for_viewing:
+                bars.loc[k, LOWS] = 'Low of {} was found at {:02}:{:02}'.format(bars.loc[low_i, 'Low'], low_i.hour, low_i.minute)
+            else:
+                bars.loc[low_i, LOWS] = '{}/{} {:02}:{:02}'.format(k.month, k.day, k.hour, k.minute)
             # bars.ix[bars.index.get_loc(k)-1-flat_cnt, LOWS] = 'Type=low, Found={}/{} {:02}:{:02}'.format(k.month, k.day, k.hour, k.minute)
             high = v
             bars.loc[k, MA_TREND] = 'up'
