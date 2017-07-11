@@ -40,9 +40,6 @@ while True:
     # Run this only if the program was just started
     if first_run:
 
-        # Configure Tranche Orders with symbol currencies
-        TrancheOrder.CURRENCIES = CURRENCIES
-
         # Get current positions
         existing = get_net_existing()
 
@@ -115,7 +112,8 @@ while True:
             sleep(time_left)
             print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
             print("Executing orders...")
-            # If certain conditions are met then make an order
+
+            # Check for order before market opens
             order_manager.check_for_opening_orders()
 
             orders_sent = True
