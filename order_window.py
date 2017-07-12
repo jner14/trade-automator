@@ -4,13 +4,14 @@ from PyQt5.QtWidgets import QApplication, QWidget, QPushButton, QAction, QLineEd
 from PyQt5.QtCore import pyqtSlot
 from PyQt5.QtGui import QIcon, QFont
 
-from xlintegrator import saxo_create_order
+# from xlintegrator import saxo_create_order
+from orders import *
 
 WINDOW_GAP = 20
 
 # TODO: add time delay cancellation of manual order window of 15 minutes
 class OrderWindow(QWidget):
-    def __init__(self, comp, side, last_price):
+    def __init__(self, company, side, last_price, size=0):
         QWidget.__init__(self)
         self.title = 'Manual Order Execution'
         self.left = 10
@@ -18,9 +19,10 @@ class OrderWindow(QWidget):
         self.width = 265
         self.height = 230
         self.order_type = 'Limit'
-        self.comp = comp
+        self.comp = company
         self.side = side
         self.last_price = last_price
+        self.size = size
         self.initUI()
 
     def initUI(self):
@@ -110,17 +112,20 @@ class OrderWindow(QWidget):
             print('{}\n[ERROR] Price={} or Size={} contains non-numerical values'.format(e, price_str, trade_amt_str))
             return
 
-        # TODO: Create Saxo order
+        price = price if price != 0. else self.last_price
         # TODO: Do tranches if limit order
-        saxo_create_order(company=self.comp,
-                          asset_type='CfdOnStock',
-                          trade_amt=trade_amt,
-                          side=self.side,
-                          duration='DayOrder',
-                          order_type=self.order_type,
-                          price=price if price != 0. else self.last_price
-                          )
-        print('Sent manual order to Saxo: company={}, side={}, order_type={}, price={}, size={}'.format(self.comp, self.side, self.order_type, price, trade_amt))
+        trade_size = get_size_from_amt(self.comp, trade_amt, price) if self.size == 0 else self.size
+        OrderManager.send_saxo_order(Order(
+            company=self.comp,
+            side=self.side,
+            trade_size=trade_size,
+            price=price,
+            order_type=self.order_type,
+            valid_until='DayOrder',
+            is_entry=True,
+            is_stop=False
+        ))
+        print('Sent manual order to Saxo: company={}, side={}, order_type={}, price={}, size={}'.format(self.comp, self.side, self.order_type, price, trade_size))
         self.close()
 
     @pyqtSlot()
@@ -155,8 +160,12 @@ class OrderWindow(QWidget):
 
 
 if __name__ == '__main__':
-    from xlintegrator import Config
+    from xlintegrator import Config, get_latest, get_net_existing, net_lbls
     Config.get_config_options()
     app = QApplication(sys.argv)
-    ex = OrderWindow('Restaurant Group', 1, 315.82)
+    comp = 'Vodafone'
+    esig = SYMBOLS.loc[comp, 'eSignal Tickers']
+    last = get_latest().loc[esig, 'Last']
+    # td_size = get_net_existing().loc[esig, net_lbls.AMOUNT]
+    ex = OrderWindow(company=comp, side=2, last_price=last)  # , size=td_size)
     sys.exit(app.exec_())

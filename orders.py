@@ -4,8 +4,11 @@ import cPickle as pickle
 from random import randint
 
 import pandas as pd
+import re
+
 import xlintegrator as xlint
 rep_lbls = xlint.rep_lbls
+net_lbls = xlint.net_lbls
 CURRENCIES = xlint.CURRENCIES
 import sys
 
@@ -14,11 +17,13 @@ ORDERS_FILENAME = 'saved_orders.pkl'
 SYMBOLS = pd.read_excel('Shared Files\\MasterFileAT.xls', 'Link to Excel', index_col=0).dropna()
 
 
+# TODO: need ability to cancel an order
 class OrderManager(object):
 
     def __init__(self):
         self._orders = {}
         self._load_orders_from_file()
+        self.prev_net_pos = xlint.get_net_existing(exclude_squared=False)
         super(OrderManager, self).__init__()
 
     def _load_orders_from_file(self):
@@ -47,12 +52,16 @@ class OrderManager(object):
 
     # TODO: execute_ready_orders
     def execute_ready_orders(self, poll_data):
+        net_positions = xlint.get_net_existing(exclude_squared=False)
+        sent_orders = xlint.get_working_orders()
         for k in self._orders.keys():
-            while self._orders[k].is_ready(poll_data):
-                OrderManager.send_saxo_order(self._orders[k].get_next())
-            if self._orders[k].is_complete():
-                self.remove_order(k)
+            if not self._orders[k].is_complete:
+                while self._orders[k].is_order_ready(poll_data):
+                    OrderManager.send_saxo_order(self._orders[k].get_next())
+            if OrderManager.is_order_complete(self._orders[k], net_positions, sent_orders):
+                self._orders[k].is_complete = True
 
+        self.prev_net_pos = net_positions
 
         # # Check for future orders that have met their price and time requirements and send them
         # for order in self._orders[::-1]:
@@ -80,6 +89,32 @@ class OrderManager(object):
         #                              )
         #         # Remove sent orders
         #         self._orders.remove(order)
+
+    def is_order_complete(self, order, net_positions, sent_orders):
+        is_complete = False
+        esig = SYMBOLS.loc[order.company, 'eSignal Tickers']
+        saxo = SYMBOLS.loc[order.company, 'Saxo Tickers']
+
+        # If the symbol is found in current net positions
+        if esig in net_positions.index:
+            # If the order is not already in progress
+            if not order.in_progress:
+                # An order is complete when the change of position size is equal to the order size plus the order size before the order was created
+                # We can check the order page for the order id and if it isn't there then it has filled
+                # But how can we keep track of tranche orders so that we can wait until one is finished before another begins
+                # Tranche orders will have multiple ids
+                # There's knowing when an order is filled and knowing when all tranche orders are filled
+                # If the size of the position is 0
+                if int(net_positions.loc[esig, net_lbls.AMOUNT]) == 0 and not order.is_stop:
+                    is_complete = True
+                    order.in_progress = False
+                    print('[INFO] order for company=%s is complete' % order.company)
+        elif saxo in sent_orders.index:
+            print('[INFO] waiting on order for company=%s to fill' % order.company)
+        else:
+            print('[ERROR] Can\'t find company=%s in existing net positions' % order.company)
+
+        return is_complete
 
     @staticmethod
     def send_saxo_order(order):
@@ -115,7 +150,17 @@ class OrderManager(object):
         else:
             alt_order_msg = order_msg
 
-        xlint.send_order(order.company, order_msg, alt_order_msg)
+        order_res = xlint.send_order(order.company, order_msg, alt_order_msg)
+
+        # Set the order id
+        if 'Order placed successfully' in order_res:
+            order.id = re.search(r':([\d]+).', order_res).group(1)
+        else:
+            print('[ERROR] send_saxo_order() - %s' % order_res)
+            return
+
+        # Mark order in progress
+        order.in_progress = True
 
         if not xlint.Config.SAXO_ENABLED:
             print("The following SIMULATED order has been sent: %s" % order_msg)
@@ -124,6 +169,7 @@ class OrderManager(object):
 
     def check_for_opening_orders(self):
         prev_close = xlint.get_prev_close()
+        latest = xlint.get_latest()
 
         # TODO: switch prev_close_rep to prev_close
         # If certain conditions are met then make an order
@@ -137,18 +183,33 @@ class OrderManager(object):
                 company = SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0]
                 side = v[rep_lbls.BUY_SELL]
 
-                # Calculate the limit price based off of the close previous to reporting day
-                limit_price = (1 + v[rep_lbls.LIMIT_PCT]) * prev_close.loc[k, 'Last']
+                # If the limit-pct = 0 then do a market order, using the last price later for calculating position size
+                if v[rep_lbls.LIMIT_PCT] == 0.0:
+                    order_type = 'Market'
+                    price = latest.loc[k, 'Last']
+                # If the limit-pct > .5 then assume it is a price not a percent and do a limit order at that price
+                elif v[rep_lbls.LIMIT_PCT] > 0.5:
+                    order_type = 'Limit'
+                    price = v[rep_lbls.LIMIT_PCT]
+                # Otherwise limit-pct is assumed to be a percentage so calculate the limit price from that percent
+                elif -0.5 < v[rep_lbls.LIMIT_PCT] < 0.5:
+                    order_type = 'Limit'
+                    # Calculate the limit price based off of the close previous to reporting day
+                    price = (1 + v[rep_lbls.LIMIT_PCT]) * prev_close.loc[k, 'Last']
+                else:
+                    print('[ERROR] check_for_opening_orders - could not calculate price, LIMIT_PCT=%s' % v[rep_lbls.LIMIT_PCT])
+                    return
 
                 # Calculate the trade size
-                trade_size = get_size_from_amt(company, v[rep_lbls.TRADE_AMT], limit_price)
+                trade_size = get_size_from_amt(company, v[rep_lbls.TRADE_AMT], price)
 
+                # TODO: fix stop loss so that it uses our custom order objects
                 # Calculate the stop loss
                 stop_str = v[rep_lbls.STOP_LOSS]
                 if stop_str != '' and stop_str != 0 and not None:
                     multiplier = 1.0 if v[rep_lbls.BUY_SELL] == 2 else -1.0
                     try:
-                        stop_loss = limit_price * (1 + multiplier * abs(float(stop_str)))
+                        stop_loss = price * (1 + multiplier * abs(float(stop_str)))
                     except:
                         stop_loss = None
                         print('[ERROR] "%s" is not a valid stop loss value' % stop_str)
@@ -157,11 +218,29 @@ class OrderManager(object):
 
                 # Define the target% tranche orders for later if needed
                 target_str = v[rep_lbls.TARGET_PCT]
-                if target_str != '' and target_str != 0 and not None:
+                if target_str != '' and not None:
                     # tranche_cnt = (v[rep_lbls.TRADE_AMT] / xlint.TRANCHE_SZ.loc[k])
                     # start_range = -tranche_cnt + int(.5 * tranche_cnt + .5)
                     # end_range = tranche_cnt - int(.5 * tranche_cnt)
                     multiplier = 1.0 if v[rep_lbls.BUY_SELL] == 1 else -1.0
+
+                    # Get target float value
+                    try:
+                        target_flt = abs(float(target_str))
+                    except:
+                        print('[ERROR] "%s" is not a valid target percent value, order not sent, please correct this' % target_str)
+                        return
+
+                    # If target-pct > .5 then assume it is a limit price
+                    if target_flt > 0.5:
+                        target_price = target_flt
+                    # If target-pct > 0 and < .5 then assume it is percent and caculate price based on percent of prev close
+                    elif -0.5 < target_flt < 0.5:
+                        target_price = (1. + target_flt * multiplier) * prev_close.loc[k, 'Last']
+                    else:
+                        print('[ERROR] check_for_opening_orders() - could not calculate price, target_flt=%s' % target_flt)
+                        return
+
                     # Get target_side
                     if side == 1 or side == '1':
                         target_side = 2
@@ -169,13 +248,6 @@ class OrderManager(object):
                         target_side = 1
                     else:
                         target_side = None
-                    # Get target float value
-                    try:
-                        target_flt = abs(float(target_str))
-                        target_price = (1. + target_flt * multiplier) * prev_close.loc[k, 'Last']
-                    except:
-                        target_price = None
-                        print('[ERROR] "%s" is not a valid target percent value' % target_str)
 
                     # Add tranche orders for later execution
                     self.add_order(TrancheOrder(
@@ -183,7 +255,7 @@ class OrderManager(object):
                         side=target_side,
                         trade_size=trade_size,
                         price=target_price,
-                        order_type='Market',
+                        order_type=xlint.Config.TARGET_ORDER_TYPE,
                         tranche_gap=xlint.Config.TRANCHE_GAP if xlint.Config.TRANCHE_GAP is None else 0.0
                     ))
 
@@ -198,8 +270,8 @@ class OrderManager(object):
                     company=company,
                     side=side,
                     trade_size=trade_size,
-                    price=limit_price,
-                    order_type='Limit',
+                    price=price,
+                    order_type=order_type,
                     valid_until=duration
                     ))
 
@@ -219,22 +291,57 @@ class OrderManager(object):
 
 class Order(object):
 
-    def __init__(self, company, side, trade_size, price, order_type, valid_from=datetime.now(), valid_until='DayOrder',
-                 trail_pct=0.0, asset_type='CfdOnStock'):
+    def __init__(self, company, side, trade_size, price, order_type, is_entry, valid_from=datetime.now(),
+                 valid_until='DayOrder', trail_pct=0.0, asset_type='CfdOnStock', is_stop=False):
         self.company        = company
         self.trade_size     = trade_size
         self.side           = side
-        self.price          = round5(price)
+        self.price          = round(price, 1)
         self.order_type     = order_type
         self.valid_from     = valid_from
         self.valid_until    = valid_until
         self.trail_pct      = trail_pct
         self.asset_type     = asset_type
+        self.is_stop        = True if trail_pct != 0 else is_stop
+        self.in_progress    = False
+        self.is_entry       = is_entry
+        self.is_complete    = False
+        self.id             = ''
 
         super(Order, self).__init__()
 
+    def is_order_ready(self, poll_data):
+        # Check if the time and price requirements have been met for the order
+        esig = SYMBOLS.loc[self.company, 'eSignal Tickers']
+        last = poll_data.loc[esig, 'Last']
+        is_ready = False
+
+        # If the time requirement is met
+        if datetime.now() >= self.valid_from:
+            # If we are long to enter and the last price is less than required
+            if self.side == 1 and not self.is_stop and last <= self.price:
+                is_ready = True
+            # If we are short to enter and last price is greater than required
+            elif self.side == 2 and not self.is_stop and last >= self.price:
+                is_ready = True
+            # If we are long to sell and the last price is greater than required
+            elif self.side == 2 and not self.is_stop and last >= self.price:
+                is_ready = True
+            # If we are short to cover and the last price is less than required
+            elif self.side == 2 and not self.is_stop and last <= self.price:
+                is_ready = True
+            # If we are short to cover with stop loss and the last price is greater than required
+            elif self.side == 1 and self.is_stop and last >= self.price:
+                is_ready = True
+            # If we are long to sell with stop loss and the last price is less than required
+            elif self.side == 2 and self.is_stop and last <= self.price:
+                is_ready = True
+
+        print('[INFO] order for company=%s is ready' % self.company)
+        return is_ready
+
     def get_next(self):
-        pass
+        return self
 
 
 class TrancheOrder(Order):
@@ -246,8 +353,8 @@ class TrancheOrder(Order):
                        'DKK': 5.0,
                        'EUR': 7.0}
 
-    def __init__(self, company, side, trade_size, price, order_type, valid_from=datetime.now(), valid_until='DayOrder',
-                 trail_pct=0.0, asset_type='CfdOnStock', tranche_gap=0.0):
+    def __init__(self, company, side, trade_size, price, order_type, is_entry, valid_from=datetime.now(), valid_until='DayOrder',
+                 trail_pct=0.0, asset_type='CfdOnStock', tranche_gap=0.0, is_stop=False):
         self._tranche_gap = check_tranche_gap(tranche_gap)
 
         # Define the min_tranche based on currency
@@ -258,8 +365,8 @@ class TrancheOrder(Order):
             self._min_tranche = check_min_tranche(max(TrancheOrder.TRANCHE_SIZES.values()))
             print('[WARNING] using default min_tranche=%s', self._min_tranche)
 
-        super(TrancheOrder, self).__init__(company, side, trade_size, price, order_type, valid_from, valid_until,
-                                           trail_pct, asset_type)
+        super(TrancheOrder, self).__init__(company, side, trade_size, price, order_type, is_entry, valid_from,
+                                           valid_until, trail_pct, asset_type, is_stop)
 
     def get_order(self):
         pass

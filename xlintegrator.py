@@ -75,7 +75,7 @@ class Config:
     SAXO_ACCT_KEY = None
     SAXO_ENABLED = None
     TRANCHE_GAP = None
-    TRANCHE_SIZE = {}
+    TARGET_ORDER_TYPE = None
 
     def __init__(self):
         pass
@@ -95,15 +95,14 @@ class Config:
                 Config.SAXO_ACCT_KEY = config_sht.range('B11').value
                 Config.SAXO_ENABLED = config_sht.range('B12').value
                 Config.TRANCHE_GAP = config_sht.range('B13').value
-                Config.TRANCHE_SIZE['GBP'] = config_sht.range('B14').value
-                Config.TRANCHE_SIZE['SEK'] = config_sht.range('B15').value
-                Config.TRANCHE_SIZE['NOK'] = config_sht.range('B16').value
-                Config.TRANCHE_SIZE['SWX'] = config_sht.range('B17').value
-                Config.TRANCHE_SIZE['DKK'] = config_sht.range('B18').value
-                Config.TRANCHE_SIZE['EUR'] = config_sht.range('B19').value
+                Config.TARGET_ORDER_TYPE = config_sht.range('B14').value
                 break
             except Exception as e:
                 exception_msg(e, 'config')
+
+        # Check values for potential problems
+        assert (Config.TARGET_ORDER_TYPE == 'Limit' or Config.TARGET_ORDER_TYPE == 'Market'), \
+            'Check "Target % Order Type" on the Config sheet'
 
 
 def exception_msg(error, sheet):
@@ -313,19 +312,28 @@ def get_reporting_day():
                 exception_msg(e, 'reporting')
 
 
-def send_order(company, message1, message2):
+def send_order(company, order_msg, alt_order_msg):
 
     # Send order
     while True:
         try:
             # Get the order count
-            curr_orders = get_current_orders()
-            new_loc = len(curr_orders) + 3
+            sent_orders = get_sent_orders()
+            new_loc = len(sent_orders) + 3
             time_now = datetime.now().replace(microsecond=0)
             # TODO: add take profit and any other missing fields below
 
             # Update order sheet, sending the order to Saxo
-            orders_sht.range('T%s' % new_loc).value = [company, message2, message1[1:], time_now]
+            orders_sht.range('T%s' % new_loc).value = [company, alt_order_msg, order_msg[1:], time_now]
+
+            # Wait for order response
+            while True:
+                order_res = orders_sht.range('U%s' % new_loc).value
+                if order_res == alt_order_msg:
+                    print('[INFO] send_order() - waiting for order response from saxo')
+                    sleep(1)
+                else:
+                    break
             break
         except Exception as e:
             exception_msg(e, 'orders')
@@ -341,6 +349,7 @@ def send_order(company, message1, message2):
             break
         except Exception as e:
             exception_msg(e, 'reporting')
+    return order_res
 
 
 def xl_ts_2_datetime(xldate):
@@ -350,7 +359,17 @@ def xl_ts_2_datetime(xldate):
     return temp + delta
 
 
-def get_current_orders():
+def get_working_orders():
+    work_orders = orders_sht.range('B2:R50').options(pd.DataFrame, ).value
+    if '' in work_orders.index:
+        work_orders.drop("", inplace=True)
+    if None in work_orders.index:
+        work_orders.drop(None, inplace=True)
+    work_orders = work_orders.fillna("")
+    return work_orders
+
+
+def get_sent_orders():
     return orders_sht.range('T2').options(pd.DataFrame, expand='vertical').value
 
 

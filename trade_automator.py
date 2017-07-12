@@ -289,5 +289,7 @@ while True:
     # Check for future orders that have met their price and time requirements and send them
     order_manager.execute_ready_orders(poll_data)
 
+    # TODO: when adding on to a position, update any target or stop orders
+
 
 print("Finished")

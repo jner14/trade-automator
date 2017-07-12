@@ -91,3 +91,7 @@ class TestXLIntegrator(TestCase):
     def test_forex(self):
         print(xlint.CONV_RATE)
         print(xlint.EXCH_CODE)
+
+    def test_get_working_orders(self):
+        df = xlint.get_working_orders()
+        print(df)
