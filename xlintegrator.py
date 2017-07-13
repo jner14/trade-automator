@@ -251,14 +251,22 @@ def set_net_existing(df, fields=['all']):
 def get_all_existing():
     while True:
         try:
-            df = existing_sht.range('Q2:X2').options(pd.DataFrame, expand='vertical').value
+            df = existing_sht.range('Q2:Y103').options(pd.DataFrame).value
             break
         except Exception as e:
                 exception_msg(e, 'existing-all')
-    time_lbl = "ExecutionTimeOpen"
-    if df[time_lbl].dtype == '<M8[ns]':
-        df[time_lbl] = df[time_lbl].apply(lambda x: x.date())
-    return df.fillna("")
+
+    # Drop empty rows and fill NANs with ''
+    if '' in df.index:
+        df.drop("", inplace=True)
+    if None in df.index:
+        df.drop(None, inplace=True)
+    df = df.fillna("")
+
+    # time_lbl = "ExecutionTimeOpen"
+    # if df[time_lbl].dtype == '<M8[ns]':
+    #     df[time_lbl] = df[time_lbl].apply(lambda x: x.date())
+    return df
 
 
 def get_monitoring():
@@ -360,12 +368,13 @@ def xl_ts_2_datetime(xldate):
 
 
 def get_working_orders():
-    work_orders = orders_sht.range('B2:R50').options(pd.DataFrame, ).value
+    work_orders = orders_sht.range('B2:Q50').options(pd.DataFrame, ).value
     if '' in work_orders.index:
         work_orders.drop("", inplace=True)
     if None in work_orders.index:
         work_orders.drop(None, inplace=True)
     work_orders = work_orders.fillna("")
+    work_orders['OrderTime'] = work_orders['OrderTime'].apply(lambda x: xl_ts_2_datetime(x))
     return work_orders
 
 

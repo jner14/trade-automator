@@ -95,3 +95,7 @@ class TestXLIntegrator(TestCase):
     def test_get_working_orders(self):
         df = xlint.get_working_orders()
         print(df)
+
+    def test_get_all_existing(self):
+        df = xlint.get_all_existing()
+        print(df)

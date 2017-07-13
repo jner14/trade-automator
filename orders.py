@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from os.path import isfile
 import cPickle as pickle
 from random import randint
 
+from copy import deepcopy
 import pandas as pd
 import re
 
@@ -23,7 +24,7 @@ class OrderManager(object):
     def __init__(self):
         self._orders = {}
         self._load_orders_from_file()
-        self.prev_net_pos = xlint.get_net_existing(exclude_squared=False)
+        self.net_positions = xlint.get_net_existing(exclude_squared=False)
         super(OrderManager, self).__init__()
 
     def _load_orders_from_file(self):
@@ -53,15 +54,24 @@ class OrderManager(object):
     # TODO: execute_ready_orders
     def execute_ready_orders(self, poll_data):
         net_positions = xlint.get_net_existing(exclude_squared=False)
+        # Send each order that is not complete and ready
+        for k in self._orders.keys():
+            if not self._orders[k].is_complete:
+                if self._orders[k].is_order_ready(poll_data):
+                    next_order = self._orders[k].get_next()
+                    order_id = OrderManager.send_saxo_order(next_order)
+                    if order_id is not None:
+                        self._orders[k].ids.append(order_id)
+
+        # Check if orders were filled and how much
+        all_positions = xlint.get_all_existing()
         sent_orders = xlint.get_working_orders()
         for k in self._orders.keys():
             if not self._orders[k].is_complete:
-                while self._orders[k].is_order_ready(poll_data):
-                    OrderManager.send_saxo_order(self._orders[k].get_next())
-            if OrderManager.is_order_complete(self._orders[k], net_positions, sent_orders):
-                self._orders[k].is_complete = True
+                if OrderManager.is_filled(self._orders[k], net_positions, sent_orders, all_positions):
+                    self._orders[k].is_complete = True
 
-        self.prev_net_pos = net_positions
+        self.net_positions = net_positions
 
         # # Check for future orders that have met their price and time requirements and send them
         # for order in self._orders[::-1]:
@@ -90,31 +100,41 @@ class OrderManager(object):
         #         # Remove sent orders
         #         self._orders.remove(order)
 
-    def is_order_complete(self, order, net_positions, sent_orders):
-        is_complete = False
+    @staticmethod
+    def is_filled(order, net_positions, sent_orders, all_positions):
         esig = SYMBOLS.loc[order.company, 'eSignal Tickers']
         saxo = SYMBOLS.loc[order.company, 'Saxo Tickers']
 
-        # If the symbol is found in current net positions
-        if esig in net_positions.index:
-            # If the order is not already in progress
-            if not order.in_progress:
-                # An order is complete when the change of position size is equal to the order size plus the order size before the order was created
-                # We can check the order page for the order id and if it isn't there then it has filled
-                # But how can we keep track of tranche orders so that we can wait until one is finished before another begins
-                # Tranche orders will have multiple ids
-                # There's knowing when an order is filled and knowing when all tranche orders are filled
-                # If the size of the position is 0
-                if int(net_positions.loc[esig, net_lbls.AMOUNT]) == 0 and not order.is_stop:
-                    is_complete = True
-                    order.in_progress = False
-                    print('[INFO] order for company=%s is complete' % order.company)
-        elif saxo in sent_orders.index:
-            print('[INFO] waiting on order for company=%s to fill' % order.company)
+        # Check if this order has been sent
+        if len(order.ids) > 0:
+            order_id = order.ids[-1]
         else:
-            print('[ERROR] Can\'t find company=%s in existing net positions' % order.company)
+            return False
 
-        return is_complete
+        # If the order id is in the sent orders and not all positions then get the amount filled the return is_filled as false
+        if order_id in sent_orders.index and order_id not in all_positions.index:
+            # TODO: make sure the type matches up here
+            amt = sent_orders.loc[(sent_orders.index == order_id), 'FilledAmount'].squeeze()
+            amt = 0 if amt == '' else int(amt)
+            # if isinstance(order, TrancheOrder):
+            order.filled_amt = sum(order.prev_trades) + amt
+            print('[INFO] waiting on order for company=%s to fill, %s/%s' % (order.company, order.filled_amt, order.trade_size))
+            return False
+        # If the order it is not in the sent order but is in all positions then assume filled and set filled amount
+        elif order_id not in sent_orders.index and order_id in all_positions.index:
+            amt = abs(int(all_positions.loc[(all_positions.index == order_id), 'Amount'].squeeze()))
+            order.prev_trades.append(amt)
+            order.filled_amt = sum(order.prev_trades)
+            order.trade_times.append(all_positions.loc[(all_positions.index == order_id), 'ExecutionTimeOpen'].squeeze())
+            print('[INFO] order for company=%s is filled=%s, %s/%s' % (order.company, order.prev_trades[-1], order.filled_amt, order.trade_size))
+            order.in_progress = False
+            # Return filled=true if the entire trade size has been filled, but not if only a partial tranche fill
+            if order.filled_amt == order.trade_size:
+                return True
+            else:
+                return False
+        else:
+            raise Exception('[Critical] a sent order was not found in Order or All Positions')
 
     @staticmethod
     def send_saxo_order(order):
@@ -154,8 +174,9 @@ class OrderManager(object):
 
         # Set the order id
         if 'Order placed successfully' in order_res:
-            order.id = re.search(r':([\d]+).', order_res).group(1)
+            order_id = re.search(r':([\d]+).', order_res).group(1)
         else:
+            order_id = None
             print('[ERROR] send_saxo_order() - %s' % order_res)
             return
 
@@ -166,6 +187,8 @@ class OrderManager(object):
             print("The following SIMULATED order has been sent: %s" % order_msg)
         else:
             print("The following order has been sent: %s" % order_msg)
+
+        return order_id
 
     def check_for_opening_orders(self):
         prev_close = xlint.get_prev_close()
@@ -256,8 +279,11 @@ class OrderManager(object):
                         trade_size=trade_size,
                         price=target_price,
                         order_type=xlint.Config.TARGET_ORDER_TYPE,
-                        tranche_gap=xlint.Config.TRANCHE_GAP if xlint.Config.TRANCHE_GAP is None else 0.0
+                        is_entry=False,
+                        tranche_gap=xlint.Config.TRANCHE_GAP if xlint.Config.TRANCHE_GAP is None else 0.0,
+                        is_stop=False
                     ))
+
 
                 # If a re-rater/de-rater or strong conviction set duration to good til canceled
                 if v[rep_lbls.CONVICTION].lower() in ['r', 'd', 'se', 'sent']:
@@ -272,7 +298,9 @@ class OrderManager(object):
                     trade_size=trade_size,
                     price=price,
                     order_type=order_type,
-                    valid_until=duration
+                    is_entry=True,
+                    valid_until=duration,
+                    is_stop=False
                     ))
 
     def add_order(self, order):
@@ -292,7 +320,7 @@ class OrderManager(object):
 class Order(object):
 
     def __init__(self, company, side, trade_size, price, order_type, is_entry, valid_from=datetime.now(),
-                 valid_until='DayOrder', trail_pct=0.0, asset_type='CfdOnStock', is_stop=False):
+                 valid_until='DayOrder', trail_pct=0.0, asset_type='CfdOnStock', is_stop=False, time_gap=5):
         self.company        = company
         self.trade_size     = trade_size
         self.side           = side
@@ -306,18 +334,27 @@ class Order(object):
         self.in_progress    = False
         self.is_entry       = is_entry
         self.is_complete    = False
-        self.id             = ''
+        self.ids            = []
+        self.filled_amt     = 0
+        self.prev_trades    = []
+        self.trade_times    = []
+        self.time_gap       = time_gap if isinstance(time_gap, timedelta) else timedelta(seconds=time_gap)
 
         super(Order, self).__init__()
 
     def is_order_ready(self, poll_data):
         # Check if the time and price requirements have been met for the order
         esig = SYMBOLS.loc[self.company, 'eSignal Tickers']
-        last = poll_data.loc[esig, 'Last']
+        last = poll_data.loc[esig, 'Last'].head(1).squeeze()
         is_ready = False
+        time_now = datetime.now()
+        if len(self.trade_times) > 0:
+            time_to_check = self.trade_times[-1] + self.time_gap
+        else:
+            time_to_check = self.valid_from
 
         # If the time requirement is met
-        if datetime.now() >= self.valid_from:
+        if time_now >= time_to_check:
             # If we are long to enter and the last price is less than required
             if self.side == 1 and not self.is_stop and last <= self.price:
                 is_ready = True
@@ -328,7 +365,7 @@ class Order(object):
             elif self.side == 2 and not self.is_stop and last >= self.price:
                 is_ready = True
             # If we are short to cover and the last price is less than required
-            elif self.side == 2 and not self.is_stop and last <= self.price:
+            elif self.side == 1 and not self.is_stop and last <= self.price:
                 is_ready = True
             # If we are short to cover with stop loss and the last price is greater than required
             elif self.side == 1 and self.is_stop and last >= self.price:
@@ -337,7 +374,8 @@ class Order(object):
             elif self.side == 2 and self.is_stop and last <= self.price:
                 is_ready = True
 
-        print('[INFO] order for company=%s is ready' % self.company)
+        if is_ready:
+            print('[INFO] order for company=%s is ready' % self.company)
         return is_ready
 
     def get_next(self):
@@ -354,8 +392,28 @@ class TrancheOrder(Order):
                        'EUR': 7.0}
 
     def __init__(self, company, side, trade_size, price, order_type, is_entry, valid_from=datetime.now(), valid_until='DayOrder',
-                 trail_pct=0.0, asset_type='CfdOnStock', tranche_gap=0.0, is_stop=False):
+                 trail_pct=0.0, asset_type='CfdOnStock', tranche_gap=0.0, is_stop=False, time_gap=5):
+        # TODO: incorporate tranche gap etc
         self._tranche_gap = check_tranche_gap(tranche_gap)
+        self.tranche_size = 10.0
+
+        # Calculate the partial size using 10 as the tranche size and the conversion rate
+        # Get the number of positions that are equal to 10k USD
+        # Grab currency using the ig symbol
+        ig_symbol = SYMBOLS.loc[company, 'IG Tickers']
+        currency = xlint.EXCH_CODE.loc[ig_symbol.split('.')[-1], 'Currency']
+
+        if currency == 'USD':
+            conv_rate = 1
+        else:
+            conv_rate = xlint.CONV_RATE.loc[currency, 'Conversion Rate']
+
+        # Calculate number of shares using the trade amount, conversion rate, and limit price
+        if price != 0.0:
+            self.partial_size = int((self.tranche_size * 1000.0 * conv_rate) / price)
+        else:
+            print(['[DEBUG] SAXO_CREATE_ORDER - must pass the limit or last price'])
+            sys.exit()
 
         # Define the min_tranche based on currency
         if company in CURRENCIES.keys():
@@ -366,10 +424,12 @@ class TrancheOrder(Order):
             print('[WARNING] using default min_tranche=%s', self._min_tranche)
 
         super(TrancheOrder, self).__init__(company, side, trade_size, price, order_type, is_entry, valid_from,
-                                           valid_until, trail_pct, asset_type, is_stop)
+                                           valid_until, trail_pct, asset_type, is_stop, time_gap)
 
-    def get_order(self):
-        pass
+    def get_next(self):
+        part_order = deepcopy(self)
+        part_order.trade_size = min(self.partial_size, self.trade_size - self.filled_amt)
+        return part_order
     # TODO: tranche orders can only place one saxo order at a time, if it is filled then send another
 
         # tranche_cnt = (v[rep_lbls.TRADE_AMT] / xlint.TRANCHE_SZ.loc[k])

@@ -11,7 +11,7 @@ WINDOW_GAP = 20
 
 # TODO: add time delay cancellation of manual order window of 15 minutes
 class OrderWindow(QWidget):
-    def __init__(self, company, side, last_price, size=0):
+    def __init__(self, company, side, last_price, is_entry=True, size=0):
         QWidget.__init__(self)
         self.title = 'Manual Order Execution'
         self.left = 10
@@ -22,6 +22,7 @@ class OrderWindow(QWidget):
         self.comp = company
         self.side = side
         self.last_price = last_price
+        self.is_entry = is_entry
         self.size = size
         self.initUI()
 
@@ -122,7 +123,7 @@ class OrderWindow(QWidget):
             price=price,
             order_type=self.order_type,
             valid_until='DayOrder',
-            is_entry=True,
+            is_entry=self.is_entry,
             is_stop=False
         ))
         print('Sent manual order to Saxo: company={}, side={}, order_type={}, price={}, size={}'.format(self.comp, self.side, self.order_type, price, trade_size))
@@ -167,5 +168,5 @@ if __name__ == '__main__':
     esig = SYMBOLS.loc[comp, 'eSignal Tickers']
     last = get_latest().loc[esig, 'Last']
     # td_size = get_net_existing().loc[esig, net_lbls.AMOUNT]
-    ex = OrderWindow(company=comp, side=2, last_price=last)  # , size=td_size)
+    ex = OrderWindow(company=comp, side=2, last_price=last, is_entry=True)  # , size=td_size)
     sys.exit(app.exec_())
