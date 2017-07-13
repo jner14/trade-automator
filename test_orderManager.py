@@ -73,13 +73,14 @@ class TestTrancheOrders(TestCase):
         from xlintegrator import Config, get_latest, get_net_existing, net_lbls
         Config.get_config_options()
         om = OrderManager()
-        om._orders = {}
-        order = TrancheOrder(comp, 1, 10000, 220.65, 'Market', is_entry=False, is_stop=True)
+        # om._orders = {}
+        order = TrancheOrder(comp, 2, 10588, 220, 'Market', is_entry=False, is_stop=False)
         om.add_order(order)
         while order.trade_size > order.filled_amt:
             print("sleeping...")
             sleep(5)
-            om.execute_ready_orders(xlint.get_latest())
+            latest = xlint.get_latest()
+            om.execute_ready_orders(latest)
         # app = QApplication(sys.argv)
         # esig = SYMBOLS.loc[comp, 'eSignal Tickers']
         # last = get_latest().loc[esig, 'Last']

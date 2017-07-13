@@ -46,30 +46,6 @@ while True:
         # Get previous close for all companies
         prev_close = get_prev_close()
 
-        # Get the latest
-
-        # If its the first run then generate stop orders for current positions
-        # TODO: test creating trailing-stop future orders for straight-forward trades
-        # TODO: move tranche calculations to the saxo order function, even the number of stop orders to place needs to be calculated at the time the tranche order is executed making all this below, useless
-        # for k, v in existing.iterrows():
-        #     tranche_cnt = int(math.ceil(v[net_lbls.AMOUNT] * latest.loc[k, 'Last'] / TRANCHE_SZ.loc[k]))
-        #     start_range = -tranche_cnt + int(.5 * tranche_cnt + .5)
-        #     end_range = tranche_cnt - int(.5 * tranche_cnt)
-        #     # Create tranche orders
-        #     for i in range(start_range, end_range):
-        #         company = SYMBOLS.loc[(SYMBOLS['eSignal Tickers'] == k)].index[0]
-        #         side = 1 if v[net_lbls.AMOUNT] < 0 else 2
-        #         stop_diff = .04 if v[net_lbls.CONVICTION].lower() == 's' else .01
-        #         stop_price = (1. + .01 * multiplier) * prev_close.loc[k, 'Last']
-        #         future_orders.append({
-        #             'company': company,
-        #             'trade_amt': TRANCHE_SZ.loc[k].squeeze(),
-        #             'side': side,
-        #             'price': (1 + i * Config.TRANCHE_GAP) * stop_price,
-        #             'valid_from': datetime.now().date(),
-        #             'order_type': 'trailing-stop-market'
-        #         })
-
         # TODO: Remove yesterday's reporting today companies, moving to monitoring if none were traded
         if (Config.MARKET_OPEN < time_now < Config.MARKET_CLOSE) or IGNORE_MKT_HRS:
             pass
@@ -255,7 +231,6 @@ while True:
     # Get existing net positions
     existing_table = get_net_existing(exclude_squared=False)
 
-    # TODO: clear fields from previous day square positions
     # Check for changes to existing positions and update fields of new positions
     chg_existing = False
     for k, v in existing_table.iterrows():
@@ -286,8 +261,8 @@ while True:
     # Update trailing-stop order prices
     order_manager.update_trailing(latest)
 
-    # Check for future orders that have met their price and time requirements and send them
-    order_manager.execute_ready_orders(poll_data)
+    # # Check for future orders that have met their price and time requirements and send them
+    # order_manager.execute_ready_orders(latest)
 
     # TODO: when adding on to a position, update any target or stop orders
 
