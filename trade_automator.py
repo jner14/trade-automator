@@ -3,8 +3,8 @@ pd.set_option('expand_frame_repr', False)
 # from py_qlink import QLinkConn
 from time import sleep
 from datetime import datetime, time, timedelta
-from xlintegrator import get_reporting, get_latest, rep_lbls, net_lbls, Config, set_reporting, L2_get_status, \
-    set_reporting_prev_close, get_net_existing, get_monitoring, L2_auto_trade, get_reporting_day, get_reporting_prev_close, \
+from xlintegrator import get_reporting, get_latest, rep_lbls, net_lbls, Config, set_reporting, \
+    set_reporting_prev_close, get_net_existing, get_monitoring, get_reporting_day, get_reporting_prev_close, \
     get_prev_close, CONV_RATE, EXCH_CODE, SYMBOLS, TRANCHE_SZ, set_net_existing, \
     CURRENCIES
 from algos import consolidation_breakout
@@ -170,7 +170,6 @@ while True:
             bars[k].loc[nanMsk, 'High'] = bars[k].loc[nanMsk, 'Close']
             bars[k].loc[nanMsk, 'Low'] = bars[k].loc[nanMsk, 'Close']
             print("[DEBUG] symbol=%s, last_bar=%s" % (k, list(bars[k].iloc[-1])))
-
 
         # # Print time elapsed since starting marker
         # print('Time Elapsed: %s' % (datetime.now() - st))

@@ -54,6 +54,35 @@ class TestOrderManager(TestCase):
         len2 = len(om._orders)
         self.assertNotEqual(len1, len2)
 
+    def test_update_queued_orders(self):
+        comp = 'Vodafone'
+        from xlintegrator import Config
+        Config.get_config_options()
+        om = OrderManager()
+        om._orders = {}
+        order = TrancheOrder(comp, 1, 5000, 219.50, 'Market', is_entry=False, is_stop=False)
+        om.add_order(order)
+        order = TrancheOrder(comp, 1, 5000, 220.50, 'Market', is_entry=False, is_stop=True)
+        om.add_order(order)
+        om.update_queued_orders()
+        print('Done')
+
+    def test_cancel_null_orders(self):
+        comp = 'Vodafone'
+        from xlintegrator import Config
+        Config.get_config_options()
+        om = OrderManager()
+        om._orders = {}
+        om.add_order(TrancheOrder(comp, 1, 5000, 219.50, 'Market', is_entry=False, is_stop=False))
+        om.add_order(TrancheOrder(comp, 1, 5000, 220.50, 'Market', is_entry=False, is_stop=True))
+        om.update_queued_orders()
+        om.cancel_null_orders()
+        om.update_queued_orders()
+        print('Done')
+
+    def test_round_to_tick(self):
+        res = round_to_tick(2.123456, 'Vodafone')
+        print("Round To Tick", res)
 
 
 class TestOrder(TestCase):
@@ -73,17 +102,21 @@ class TestTrancheOrders(TestCase):
         from xlintegrator import Config, get_latest, get_net_existing, net_lbls
         Config.get_config_options()
         om = OrderManager()
-        # om._orders = {}
-        order = TrancheOrder(comp, 2, 10588, 220, 'Market', is_entry=False, is_stop=False)
+        om._orders = {}
+        order = TrancheOrder(comp, 1, 5000, 219.50, 'Market', is_entry=False, is_stop=False)
         om.add_order(order)
+        # order = TrancheOrder(comp, 1, 5000, 220.50, 'Market', is_entry=False, is_stop=True)
+        # om.add_order(order)
+        # order = om._orders[0]
         while order.trade_size > order.filled_amt:
             print("sleeping...")
             sleep(5)
             latest = xlint.get_latest()
             om.execute_ready_orders(latest)
         # app = QApplication(sys.argv)
-        # esig = SYMBOLS.loc[comp, 'eSignal Tickers']
+        # esig = SYMBOLS.loc[comp, 'eSignal']
         # last = get_latest().loc[esig, 'Last']
         # # td_size = get_net_existing().loc[esig, net_lbls.AMOUNT]
         # ex = OrderWindow(company=comp, side=2, last_price=last, is_entry=True)  # , size=td_size)
         # sys.exit(app.exec_())
+

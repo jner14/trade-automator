@@ -11,6 +11,8 @@ import string
 from time import sleep
 
 WORKBOOK_FILENAME = 'trade-dashboard.xlsm'
+TICKERS_FILENAME = 'CompanyTickers.xlsx'
+
 DEBUG = True
 
 # Connect to the excel workbook
@@ -36,8 +38,16 @@ tranche_sht = wb.sheets('Tranche Size')
 # Grab conversion rate, exchange code, and symbol tables
 CONV_RATE = forex_sht.range('B2').options(pd.DataFrame, expand='table').value
 EXCH_CODE = forex_sht.range('F2').options(pd.DataFrame, expand='table').value
-SYMBOLS = pd.read_excel('Shared Files\\MasterFileAT.xls', 'Link to Excel', index_col=0).dropna()
-CURRENCIES = {comp: EXCH_CODE.loc[SYMBOLS.loc[comp, 'IG Tickers'].split('.')[-1], 'Currency'] for comp in SYMBOLS.index}
+SYMBOLS = pd.read_excel('Shared Files\\' + TICKERS_FILENAME, 'Sheet1', index_col=0).dropna()
+TICK_GROUPS = SYMBOLS['TickGroup']
+TICK_SIZES = pd.read_excel('Shared Files\\' + TICKERS_FILENAME, 'Sheet2')
+TICK_BINS = {}
+for tg in TICK_SIZES['TickGroup'].unique():
+    msk = TICK_SIZES['TickGroup'] == tg
+    TICK_BINS[tg] = {'bins': list(TICK_SIZES.loc[msk, 'Bins'][1:]),
+                     'tick sizes': list(TICK_SIZES.loc[msk, 'TickSize'])}
+CURRENCIES = {comp: EXCH_CODE.loc[SYMBOLS.loc[comp, 'IG'].split('.')[-1], 'Currency'] for comp in SYMBOLS.index}
+
 # TODO: add tranche size sheet and load it in the line below
 TRANCHE_SZ = tranche_sht.range('B2').options(pd.DataFrame, expand='table').value.dropna()
 
@@ -225,7 +235,7 @@ def get_net_existing(exclude_squared=True):
     df = df.fillna('')
 
     # Get esignal symbols and set as index
-    df[net_lbls.ESIGNAL_SYMBOL] = df[net_lbls.SAXO_SYMBOL].apply(lambda x:  SYMBOLS.loc[(SYMBOLS['Saxo Tickers'] == x), 'eSignal Tickers'].squeeze())
+    df[net_lbls.ESIGNAL_SYMBOL] = df[net_lbls.SAXO_SYMBOL].apply(lambda x:  SYMBOLS.loc[(SYMBOLS['Saxo'] == x), 'eSignal'].squeeze())
     df = df.set_index(net_lbls.ESIGNAL_SYMBOL)
     return df
 
@@ -340,24 +350,12 @@ def send_order(company, order_msg, alt_order_msg):
                 order_res = orders_sht.range('U%s' % new_loc).value
                 if order_res == alt_order_msg:
                     print('[INFO] send_order() - waiting for order response from saxo')
-                    sleep(1)
+                    sleep(.2)
                 else:
                     break
             break
         except Exception as e:
             exception_msg(e, 'orders')
-
-    # Update dashboard
-    while True:
-        try:
-            # Remove order info from reporting tab
-            reporting = get_reporting()
-            esig_symbol = SYMBOLS.loc[company, "eSignal Tickers"]
-            reporting.loc[esig_symbol, rep_lbls.BUY_SELL] = "sent"
-            set_reporting(reporting)
-            break
-        except Exception as e:
-            exception_msg(e, 'reporting')
     return order_res
 
 
@@ -383,6 +381,16 @@ def get_sent_orders():
     return orders_sht.range('T2').options(pd.DataFrame, expand='vertical').value
 
 
+def set_queued_orders(df):
+    while True:
+        try:
+            orders_sht.range('AA2:AZ53').clear_contents()
+            orders_sht.range('AA2').value = df
+            break
+        except Exception as e:
+                exception_msg(e, 'queued orders')
+
+
 if __name__ == '__main__':
 
     # latest_prices = get_latest()
@@ -393,6 +401,7 @@ if __name__ == '__main__':
     # set_reporting(reporting_table, fields=[])
     # set_reporting(reporting_table, fields=[FieldLabels.REPORT_DATE])
     # prev_close = get_reporting_prev_close()
+    print("Done")
     pass
 
 print("[OK] xlintegrator imported")

@@ -165,7 +165,7 @@ if __name__ == '__main__':
     Config.get_config_options()
     app = QApplication(sys.argv)
     comp = 'Vodafone'
-    esig = SYMBOLS.loc[comp, 'eSignal Tickers']
+    esig = SYMBOLS.loc[comp, 'eSignal']
     last = get_latest().loc[esig, 'Last']
     # td_size = get_net_existing().loc[esig, net_lbls.AMOUNT]
     ex = OrderWindow(company=comp, side=2, last_price=last, is_entry=True)  # , size=td_size)
