@@ -22,6 +22,7 @@ POLL_LABELS = ['Last', 'Volume']
 TIME_FORMAT = "%I:%M:%S %p"
 UPDATE_INTERVAL = 15  # seconds
 IGNORE_MKT_HRS = True
+BAR_SIZE = 1
 
 period = 1
 poll_data = {}
@@ -32,19 +33,20 @@ while True:
     # Get the time and print it to console
     time_now = datetime.now().time()
     first_second = time_now.second
-    print("The time is %s" % time_now.strftime(TIME_FORMAT))
-
-    # Update config options
-    Config.get_config_options()
 
     # Run this only if the program was just started
     if first_run:
+
+        # Update config options
+        Config.get_config_options()
 
         # Get current positions
         existing = get_net_existing()
 
         # Get previous close for all companies
+        set_reporting_prev_close()
         prev_close = get_prev_close()
+        # prev_close_rep = get_reporting_prev_close()
 
         # TODO: Remove yesterday's reporting today companies, moving to monitoring if none were traded
         if (Config.MARKET_OPEN < time_now < Config.MARKET_CLOSE) or IGNORE_MKT_HRS:
@@ -59,10 +61,13 @@ while True:
                     lambda x: report_day if x is None or x is pd.NaT or x == '' else x)
             set_reporting(reporting_table, [rep_lbls.REPORT_DATE])
 
+        # Set first run variable to false
+        first_run = False
+
     # Run this only during the minute before market open
     # TODO: fix this for times when program is started after market hours have begun
     if time_now < change_time(Config.MARKET_OPEN, -1) or time_now > Config.MARKET_CLOSE:
-        print("Market hours are configured as {} - {}".format(Config.MARKET_OPEN.strftime(TIME_FORMAT),
+        print("[INFO] Market hours are configured as {} - {}".format(Config.MARKET_OPEN.strftime(TIME_FORMAT),
                                                               Config.MARKET_CLOSE.strftime(TIME_FORMAT)))
     #     prev_close = get_latest()
     #     print("Will proceed after market hours begin.")
@@ -74,7 +79,6 @@ while True:
     #     set_reporting_prev_close()
     #     prev_close_rep = get_reporting_prev_close()
     #     prev_close = get_prev_close()
-    set_reporting_prev_close()
 
     # Waiting until market opens
     orders_sent = False
@@ -84,17 +88,17 @@ while True:
         if Config.MARKET_OPEN > time_now > change_time(Config.MARKET_OPEN, -1) and not orders_sent:
             seconds_before = 3.0
             time_left = 60.0 - seconds_before - time_now.second + time_now.microsecond / 1e6
-            print("\nExecuting orders in %s seconds" % time_left)
+            print("\n[INFO] Executing orders in %s seconds" % time_left)
             sleep(time_left)
-            print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
-            print("Executing orders...")
+            print("[INFO] The time is %s" % datetime.now().strftime(TIME_FORMAT))
+            print("[INFO] Executing orders...")
 
             # Check for order before market opens
             order_manager.check_for_opening_orders()
 
             orders_sent = True
-            print("The time is %s" % datetime.now().strftime(TIME_FORMAT))
-            print("Finished...")
+            print("[INFO] The time is %s" % datetime.now().strftime(TIME_FORMAT))
+            print("[INFO] Finished...")
 
         if datetime.now().second == first_second:
             # Update config options
@@ -109,7 +113,7 @@ while True:
 
     # Collect some data from excel and update empty reporting day fields
     # existing_table = get_net_positions()
-    monitoring_table = get_monitoring()
+    # monitoring_table = get_monitoring()
 
     # Run only once
     # if first_run:
@@ -121,11 +125,10 @@ while True:
     time_now = datetime.now().time()
     current_secs = time_now.second + time_now.microsecond / 1e6  # .replace(hour=0, minute=0)
     time_left = (int(current_secs / float(UPDATE_INTERVAL)) * UPDATE_INTERVAL + UPDATE_INTERVAL) - current_secs
-    print("Waiting %s seconds" % time_left)
+    print("[INFO] Waiting %s seconds" % time_left)
     sleep(time_left)
-
-    prev_close_rep = get_reporting_prev_close()
-    prev_close = get_prev_close()
+    time_now = datetime.now().time()
+    print("[DEBUG] Polling latest prices, the time is %s" % time_now.strftime(TIME_FORMAT))
 
     ### Grab latest price and volume
     #     POLL_LABELS = ['Last', 'Volume']
@@ -141,9 +144,9 @@ while True:
                 poll_data[k].ix[-1, 'Volume'] -= poll_data[k].ix[0:-1, 'Volume'].sum()
 
     ### At the close of a bar, create new bars and run algos
-    BAR_SIZE = 1
     time_now = datetime.now().time()
     if (time_now.minute % BAR_SIZE == 0 and (5 > time_now.second or time_now.second > 55)):
+        print("[INFO] Building %s minute bars, the time is %s" % (BAR_SIZE, time_now.strftime(TIME_FORMAT)))
 
         # Create 5 minute bars at the end of every bar
         assert len(poll_data) > 0, "poll_data has not been gathered"
@@ -189,24 +192,31 @@ while True:
         # pt_matches = reporting_table[rep_lbls.ENTRY_REQ].str.extract(r'price\(([\d.]+)\)', expand=True).dropna()
         # for k, v in pt_matches.iteritems():
         #     print(k, v)
-
+        # TODO: test price change code with live data
         # Check for price move 1% or 2%
+        print("[INFO] Checking for price movement, the time is %s" % time_now.strftime(TIME_FORMAT))
         for k, v in bars.iteritems():
             if k not in reporting_table.index: continue
             try:
-                if .99 * prev_close.loc[k, 'Last'] > v.ix[-1, 'Close'] or v.ix[-1, 'Close'] > 1.01 * prev_close.loc[k, 'Last']:
-                    if "1%Change" not in reporting_table.loc[k, rep_lbls.TRIGGERS]:
-                        if reporting_table.loc[k, rep_lbls.TRIGGERS] != "":
-                            reporting_table.loc[k, rep_lbls.TRIGGERS] += ",1%Change"
-                        else:
-                            reporting_table.loc[k, rep_lbls.TRIGGERS] = "1%Change"
+                for i in range(20, 0, -1):
+                    pct = i/100.0
+                    up = 1.0 + i/100.0
+                    dn = 1.0 - i/100.0
+                    # Check for downward movement
+                    if dn * prev_close.loc[k, 'Last'] > v.ix[-1, 'Close']:
+                        if '-%s%%' % i not in reporting_table.loc[k, rep_lbls.TRIGGERS]:
+                            if reporting_table.loc[k, rep_lbls.TRIGGERS] != "":
+                                reporting_table.loc[k, rep_lbls.TRIGGERS] += ",-%s%%" % i
+                            else:
+                                reporting_table.loc[k, rep_lbls.TRIGGERS] = "-%s%%" % i
+                    # Check for upward movement
+                    elif up * prev_close.loc[k, 'Last'] < v.ix[-1, 'Close']:
+                        if '-%s%%' % i not in reporting_table.loc[k, rep_lbls.TRIGGERS]:
+                            if reporting_table.loc[k, rep_lbls.TRIGGERS] != "":
+                                reporting_table.loc[k, rep_lbls.TRIGGERS] += ",%s%%" % i
+                            else:
+                                reporting_table.loc[k, rep_lbls.TRIGGERS] = "%s%%" % i
 
-                if .98 * prev_close.loc[k, 'Last'] > v.ix[-1, 'Close'] or v.ix[-1, 'Close']  > 1.02 * prev_close.loc[k, 'Last']:
-                    if "2%Change" not in reporting_table.loc[k, rep_lbls.TRIGGERS]:
-                        if reporting_table.loc[k, rep_lbls.TRIGGERS] != "":
-                            reporting_table.loc[k, rep_lbls.TRIGGERS] += ",2%Change"
-                        else:
-                            reporting_table.loc[k, rep_lbls.TRIGGERS] = "2%Change"
             except Exception as e:
                 print(e)
 
@@ -261,9 +271,6 @@ while True:
     order_manager.update_trailing(latest)
 
     # # Check for future orders that have met their price and time requirements and send them
-    # order_manager.execute_ready_orders(latest)
+    order_manager.execute_ready_orders(latest)
 
     # TODO: when adding on to a position, update any target or stop orders
-
-
-print("Finished")

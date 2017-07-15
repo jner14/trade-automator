@@ -12,7 +12,9 @@ from time import sleep
 
 WORKBOOK_FILENAME = 'trade-dashboard.xlsm'
 TICKERS_FILENAME = 'CompanyTickers.xlsx'
-
+EOD_TIMES = pd.DataFrame({'Hour': [16, 16, 16, 16, 15, 15, 15, 15, 16, 16, 16, 16, 16],
+                          'Minute': [30, 30, 20, 20, 25, 25, 55, 55, 25, 25, 25, 25, 30]},
+                         index=['LSE1', 'LSE2', 'SW1', 'SW2', 'NO1', 'NO2', 'CO1', 'CO2', 'SWE1', 'SWE2', 'HE1', 'HE2', 'EUR'])
 DEBUG = True
 
 # Connect to the excel workbook
@@ -47,6 +49,7 @@ for tg in TICK_SIZES['TickGroup'].unique():
     TICK_BINS[tg] = {'bins': list(TICK_SIZES.loc[msk, 'Bins'][1:]),
                      'tick sizes': list(TICK_SIZES.loc[msk, 'TickSize'])}
 CURRENCIES = {comp: EXCH_CODE.loc[SYMBOLS.loc[comp, 'IG'].split('.')[-1], 'Currency'] for comp in SYMBOLS.index}
+EOD = pd.DataFrame({t_type: [EOD_TIMES.loc[SYMBOLS.loc[comp, 'TickGroup'], t_type] for comp in SYMBOLS.index] for t_type in ['Hour', 'Minute']}, index=SYMBOLS.index)
 
 # TODO: add tranche size sheet and load it in the line below
 TRANCHE_SZ = tranche_sht.range('B2').options(pd.DataFrame, expand='table').value.dropna()
@@ -87,6 +90,7 @@ class Config:
     TRANCHE_GAP = None
     TARGET_ORDER_TYPE = None
     STOP_ORDER_TYPE = None
+    EOD_EXIT_TIME = None
 
     def __init__(self):
         pass
@@ -108,6 +112,7 @@ class Config:
                 Config.TRANCHE_GAP = config_sht.range('B13').value
                 Config.TARGET_ORDER_TYPE = config_sht.range('B14').value
                 Config.STOP_ORDER_TYPE = config_sht.range('B15').value
+                Config.EOD_EXIT_TIME = config_sht.range('B16').value
                 break
             except Exception as e:
                 exception_msg(e, 'config')
@@ -119,7 +124,7 @@ class Config:
 
 def exception_msg(error, sheet):
     if 'Call was rejected by callee.' in error:
-        print("\nFailed to access Config cells.  Pausing momentarily in case you're making changes.")
+        print("\nFailed to access sheet=%s.  Pausing momentarily in case you're making changes." % sheet)
     elif DEBUG:
         print("[DEBUG][%s] %s" % (sheet, error))
     sleep(2)
@@ -158,7 +163,7 @@ def get_prev_close():
             return prev_close
         else:
             # Notify of data issue
-            print("[ERROR] Latest data pull came back with empty values. " +
+            print("[WARNING] Latest data pull came back with empty values. " +
                   "Ensure Qlink is running and the data sheet is updating all cells.")
             sleep(2)
             # sys.exit()
@@ -168,7 +173,7 @@ def get_reporting_prev_close():
     while True:
         try:
             # TODO: consider running set_reporting_prev_close before, waiting to populate, then running the values
-            return data_sht.range('Q2:X2').options(pd.DataFrame, expand='vertical').value.fillna("")
+            return data_sht.range('Q2:X53').options(pd.DataFrame, expand='vertical').value.fillna("")
         except Exception as e:
                 exception_msg(e, 'data')
 
@@ -222,7 +227,7 @@ def set_reporting(df, fields=['all']):
 def get_net_existing(exclude_squared=True):
     while True:
         try:
-            df = existing_sht.range('A2:J2').options(pd.DataFrame, expand='vertical').value
+            df = existing_sht.range('A2:K53').options(pd.DataFrame, expand='vertical').value
             break
         except Exception as e:
                 exception_msg(e, 'existing-net')
@@ -257,7 +262,7 @@ def set_net_existing(df, fields=['all']):
                         print('[WARNING] field=%s is not in net_lbls.' % field)
             break
         except Exception as e:
-                exception_msg(e, 'reporting')
+                exception_msg(e, 'existing')
 
 
 def get_all_existing():
@@ -315,7 +320,7 @@ def get_latest():
     # Check if data pulled has empty values
     if (latest['Last'] == "").sum() > 0 or (latest['Volume'] == "").sum() > 0 or (latest['Last Time'] == "").sum() > 0:
         # Notify of data issue
-        print("[ERROR] Latest data pull came back with empty values. " +
+        print("[WARNING] Latest data pull came back with empty values. " +
               "Ensure Qlink is running and the data sheet is updating all cells.")
         sleep(2)
         # sys.exit()

@@ -13,6 +13,7 @@ rep_lbls = xlint.rep_lbls
 net_lbls = xlint.net_lbls
 SYMBOLS = xlint.SYMBOLS
 CURRENCIES = xlint.CURRENCIES
+EOD = xlint.EOD
 ORDERS_FILENAME = 'saved_orders.pkl'
 
 
@@ -26,30 +27,48 @@ class OrderManager(object):
         super(OrderManager, self).__init__()
 
     def _load_orders_from_file(self):
+        print('[DEBUG] Loading saved orders...')
+        st = datetime.now()
         if isfile(ORDERS_FILENAME):
             with open(ORDERS_FILENAME, 'rb') as orders_file:
                 self._orders = pickle.load(orders_file)
         else:
             self._orders = {}
+        et = datetime.now()
+        print("[DEBUG] Finished loading saved orders, %ss" % (et - st).total_seconds())
 
     def _save_orders_to_file(self):
+        print('[DEBUG] Saving orders...')
+        st = datetime.now()
         if len(self._orders) > 0:
             with open(ORDERS_FILENAME, 'wb') as orders_file:
                 pickle.dump(self._orders, orders_file)
+        et = datetime.now()
+        print("[DEBUG] Finished saving orders, %ss" % (et - st).total_seconds())
 
     # TODO: test update trailing-stop future orders
     def update_trailing(self, latest):
+        print('[DEBUG] Updating trailing stops...')
+        st = datetime.now()
+
         for order in self._orders.values():
-            if order.trail_pct != 0:
+            if not order.is_complete and order.trail_pct != 0:
                 last = latest.loc[SYMBOLS.loc[order.company, 'eSignal'], 'Last']
                 # If the price is greater than 1% different from stop price, update price
-                if abs(1 - last / order.price) > 0.01:
+                if order.price != 0 and abs(1 - last / order.price) > 0.01:
                     if order.side == 1:
                         order.price = round_to_tick(1.01 * last, order.company)
                     else:
                         order.price = round_to_tick(0.99 * last, order.company)
+        self._save_orders_to_file()
+        et = datetime.now()
+        print("[DEBUG] Finished updating trailing stops, %ss" % (et - st).total_seconds())
 
     def execute_ready_orders(self, latest):
+        print('[DEBUG] Executing ready orders...')
+        st = datetime.now()
+        order_was_sent = False
+
         # Send each order that is not complete and ready
         for k in self._orders.keys():
             if not self._orders[k].is_complete:
@@ -57,29 +76,40 @@ class OrderManager(object):
                     print('%s: %s' % (self._orders[k].company, latest.loc[SYMBOLS.loc[self._orders[k].company, 'eSignal'], 'Last']))
                     next_order = self._orders[k].get_next()
                     order_id = OrderManager.send_saxo_order(next_order)
+                    order_was_sent = True
                     if order_id is not None:
                         self._orders[k].in_progress = True
                         self._orders[k].ids.append(order_id)
 
         # Check if orders were filled and how much
         for k in self._orders.keys():
-            if not self._orders[k].is_complete:
+            if not self._orders[k].is_complete and len(self._orders[k].ids) > 0:
                 if OrderManager.is_filled(self._orders[k]):
                     self._orders[k].is_complete = True
 
-        # self.net_positions = net_positions
-        self.update_queued_orders()
+        # Cancel null orders and update queued orders table
+        if order_was_sent:
+            self.cancel_null_orders()
+            self.update_queued_orders()
         self._save_orders_to_file()
+        et = datetime.now()
+        print("[DEBUG] Finished executing ready orders, %ss" % (et - st).total_seconds())
 
     def cancel_null_orders(self):
+        print('[DEBUG] Canceling null orders...')
+        st = datetime.now()
         existing = xlint.get_net_existing(exclude_squared=False)
         for k, o in self._orders.iteritems():
             esig = SYMBOLS.loc[o.company, 'eSignal']
-            if not o.is_entry and existing.loc[esig, net_lbls.AMOUNT] == 0:
+            if not o.is_complete and not o.is_entry and existing.loc[esig, net_lbls.AMOUNT] == 0:
                 print('[INFO][OrderManager] Canceling order=%s because there is no current position to exit' % k)
                 o.is_complete = True
+        et = datetime.now()
+        print("[DEBUG] Finished canceling null orders, %ss" % (et - st).total_seconds())
 
     def update_queued_orders(self):
+        print('[DEBUG] Updating queued orders...')
+        st = datetime.now()
         df = pd.DataFrame(columns=['Company', 'Trade Size', 'Side', 'Price', 'Order Type', 'Valid From',
                                    'Valid Until', 'Trail %', 'Asset Type', 'Is Stop', 'In Progress',
                                    'Is Entry', 'Is Complete', 'IDs', 'Filled Amt', 'Prev Trades', 'Trade Times',
@@ -89,19 +119,21 @@ class OrderManager(object):
                          o.valid_until, o.trail_pct, o.asset_type, o.is_stop, o.in_progress, o.is_entry, o.is_complete,
                          str(o.ids), o.filled_amt, str(o.prev_trades), str(o.trade_times), o.time_gap.seconds]
         xlint.set_queued_orders(df)
+        et = datetime.now()
+        print("[DEBUG] Finished updating queued orders, %ss" % (et - st).total_seconds())
 
     @staticmethod
     def is_filled(order):
+        print('[DEBUG] Checking if order=%s is filled...' % order.ids[-1])
+        st = datetime.now()
+        result = None
         all_positions = xlint.get_all_existing()
         sent_orders = xlint.get_working_orders()
-        esig = SYMBOLS.loc[order.company, 'eSignal']
-        saxo = SYMBOLS.loc[order.company, 'Saxo']
+        # esig = SYMBOLS.loc[order.company, 'eSignal']
+        # saxo = SYMBOLS.loc[order.company, 'Saxo']
 
-        # Check if this order has been sent
-        if len(order.ids) > 0:
-            order_id = order.ids[-1]
-        else:
-            return False
+        # Get the most recent order id
+        order_id = order.ids[-1]
 
         for i in range(20):
 
@@ -113,7 +145,8 @@ class OrderManager(object):
                 # if isinstance(order, TrancheOrder):
                 order.filled_amt = sum(order.prev_trades) + amt
                 print('[INFO] waiting on order for company=%s to fill, %s/%s' % (order.company, order.filled_amt, order.trade_size))
-                return False
+                result = False
+                break
             # If the order it is not in the sent order but is in all positions then assume filled and set filled amount
             elif order_id not in sent_orders.index and order_id in all_positions.index:
                 amt = abs(int(all_positions.loc[(all_positions.index == order_id), 'Amount'].squeeze()))
@@ -124,19 +157,26 @@ class OrderManager(object):
                 order.in_progress = False
                 # Return filled=true if the entire trade size has been filled, but not if only a partial tranche fill
                 if order.filled_amt == order.trade_size:
-                    return True
+                    result = True
+                    break
                 else:
-                    return False
+                    result = False
+                    break
             print('[DEBUG] waiting for position with order id=%s to show up in All Positions' % order_id)
             sleep(.2)
             all_positions = xlint.get_all_existing()
             sent_orders = xlint.get_working_orders()
 
+        assert result is not None, '[Critical] a sent order=%s was not found in Order or All Positions' % order_id
 
-        raise Exception('[Critical] a sent order=%s was not found in Order or All Positions' % order_id)
+        et = datetime.now()
+        print("[DEBUG] Finished checking if order=%s is filled, %ss" % (order_id, (et - st).total_seconds()))
+        return result
 
     @staticmethod
     def send_saxo_order(order):
+        print('[DEBUG] Sending a Saxo order...')
+        st = datetime.now()
 
         # Convert side to string format
         if order.side == 1 or order.side == '1':
@@ -184,9 +224,13 @@ class OrderManager(object):
         else:
             print("The following order has been sent: %s" % order_msg)
 
+        et = datetime.now()
+        print("[DEBUG] Finished checking for opening orders, %ss" % (et - st).total_seconds())
         return order_id
 
     def check_for_opening_orders(self):
+        print('[DEBUG] Checking for opening orders...')
+        st = datetime.now()
         prev_close = xlint.get_prev_close()
         latest = xlint.get_latest()
 
@@ -230,7 +274,6 @@ class OrderManager(object):
                 else:
                     exit_side = None
 
-                # TODO: fix stop loss so that it uses our custom order objects
                 # Calculate the stop loss and add to orders list
                 stop_str = v[rep_lbls.STOP_LOSS]
                 if stop_str != '' and stop_str != 0 and not None:
@@ -278,7 +321,7 @@ class OrderManager(object):
                         print('[ERROR] check_for_opening_orders() - could not calculate price, target_flt=%s' % target_flt)
                         return
 
-                    # Add tranche orders for later execution
+                    # Add target% tranche orders for later execution
                     self.add_order(TrancheOrder(
                         company=company,
                         side=exit_side,
@@ -289,6 +332,23 @@ class OrderManager(object):
                         tranche_gap=xlint.Config.TRANCHE_GAP if xlint.Config.TRANCHE_GAP is None else 0.0,
                         is_stop=False
                     ))
+
+                # TODO: Test EOD orders
+                # Define end of day order if needed
+                if v[rep_lbls.EOD_EXIT].upper() in ['TRUE', 'T', 'YES', 'Y']:
+
+                    # Add EOD tranche orders for later execution
+                    self.add_order(Order(
+                        company=company,
+                        side=exit_side,
+                        trade_size=trade_size,
+                        price=0.0,
+                        order_type='Market',
+                        is_entry=False,
+                        valid_from=datetime.now().replace(hour=EOD.loc[company, 'Hour'], minute=EOD.loc[company, 'Minute'], second=0),
+                        is_stop=False
+                    ))
+
 
                 # If a re-rater/de-rater or strong conviction set duration to good til canceled
                 if v[rep_lbls.CONVICTION].lower() in ['r', 'd', 'se', 'sent']:
@@ -319,6 +379,9 @@ class OrderManager(object):
                         break
                     except Exception as e:
                         xlint.exception_msg(e, 'reporting')
+        self.update_queued_orders()
+        et = datetime.now()
+        print("[DEBUG] Finished checking for opening orders, %ss" % (et - st).total_seconds())
 
     def add_order(self, order):
         # Add the order, incrementing the highest id by 1
@@ -372,8 +435,11 @@ class Order(object):
 
         # If the time requirement is met and another order isn't waiting to be filled
         if time_now >= time_to_check and not self.in_progress:
+            # If price == 0 then assume it is a market order to be sent as soon as time constraints are met
+            if self.price == 0:
+                is_ready = True
             # If we are long to enter and the last price is less than required
-            if self.side == 1 and not self.is_stop and last <= self.price:
+            elif self.side == 1 and not self.is_stop and last <= self.price:
                 is_ready = True
             # If we are short to enter and last price is greater than required
             elif self.side == 2 and not self.is_stop and last >= self.price:
